@@ -24,21 +24,21 @@ This is a starter template for building [Circles](https://aboutcircles.com) mini
 ```
 app/
   layout.tsx                    Root: <WalletProvider><AppShell>{children}
-  page.tsx                      Dashboard (ConnectionCard + SignInDemo + NavCards)
-  profile/page.tsx              Profile lookup
-  actions/page.tsx              sendTransactions code sample
+  page.tsx                      Home (minimal placeholder)
+  groups/page.tsx               Placeholder route
+  new/page.tsx                  Placeholder route
+  bills/page.tsx                Placeholder route
+  more/page.tsx                 Boilerplate demos (ConnectionCard + SignInDemo + ProfileLookup + sendTransactions sample)
   globals.css                   Tailwind v4 + shadcn tokens (light only)
   icon.svg                      Favicon (Circles brand glyph)
 components/
   brand/CirclesLogo.tsx         Inline-SVG brand mark
   layout/
     AppShell.tsx                Grid: header (col-span-full) + sidebar (md+) + main
-    Header.tsx                  Logo, current-page crumb, MobileNav, WalletStatus
+    Header.tsx                  Logo, current-page crumb, WalletStatus
     Sidebar.tsx                 Desktop nav (md+), driven by lib/nav.ts
-    MobileNav.tsx               Hamburger + Sheet drawer (below md)
-    CurrentPage.tsx             "/ Dashboard" crumb in header
-    NavCards.tsx                Dashboard's link-cards to /profile and /actions
-    PageNav.tsx                 Prev/next sibling navigation at bottom of sub-pages
+    BottomNav.tsx               Sticky bottom tab bar (below md), driven by lib/nav.ts
+    CurrentPage.tsx             "/ Home" crumb in header
   wallet/
     WalletProvider.tsx          Client context, subscribes to onWalletChange
     WalletStatus.tsx            Badge with shortened address
@@ -51,7 +51,7 @@ hooks/
   use-wallet.ts                 Re-export of useWallet
 lib/
   utils.ts                      cn() + shortenAddress(addr, chars=4)
-  nav.ts                        NAV array — single source of truth for the sidebar/drawer/page-nav
+  nav.ts                        NAV array — single source of truth for the sidebar/bottom-nav/page-nav
 next.config.ts                  CSP frame-ancestors header for the Circles playground iframe
 ```
 
@@ -132,24 +132,26 @@ const { address, isConnected, isMiniappHost } = useWallet();
 
 ## Navigation
 
-The sidebar, mobile drawer, current-page crumb, and prev/next page nav are all driven by a single source — [`lib/nav.ts`](lib/nav.ts). To add a route, edit `NAV` and create `app/<route>/page.tsx`. To reorder how prev/next links flow, reorder `NAV`.
+The sidebar, bottom tab bar, current-page crumb, and prev/next page nav are all driven by a single source — [`lib/nav.ts`](lib/nav.ts). To add a route, edit `NAV` and create `app/<route>/page.tsx`. To reorder how prev/next links flow, reorder `NAV`.
 
 ```ts
 // lib/nav.ts
 export const NAV: NavItem[] = [
-  { href: '/', label: 'Dashboard' },
-  { href: '/profile', label: 'Profile' },
-  { href: '/actions', label: 'Actions' },
+  { href: '/', label: 'Home' },
+  { href: '/groups', label: 'Groups' },
+  { href: '/new', label: 'New' },
+  { href: '/bills', label: 'Bills' },
+  { href: '/more', label: 'More' },
 ];
 ```
 
-The dashboard (`/`) intentionally has no `<PageNav />` because [`NavCards`](components/layout/NavCards.tsx) above it serves the same purpose. Sub-pages include `<PageNav />` at the bottom for sequential navigation.
+Pages do not carry prev/next navigation cards — the sidebar and bottom tab bar are the only nav affordances.
 
 ## Styling
 
 - **Tailwind v4.** `app/globals.css` imports `tailwindcss` and `shadcn/tailwind.css` and defines tokens under `@theme inline { … }`. There is no `tailwind.config.js`.
 - **shadcn primitives** in `components/ui/`. **Do not hand-edit** them — they are CLI-generated. To update a component, regenerate it with `pnpm dlx shadcn@latest add <name> --overwrite`.
-- **shadcn uses Base UI** (`@base-ui/react`), not Radix. Trigger components accept a `render={<Button … />}` prop, not `asChild`. See `MobileNav.tsx` for an example.
+- **shadcn uses Base UI** (`@base-ui/react`), not Radix. Trigger components accept a `render={<Button … />}` prop, not `asChild`.
 - **Light mode only.** The `.dark { … }` CSS block was deleted from `globals.css` and the `@custom-variant dark` directive was removed. Do not write `dark:` variants. To re-enable dark mode, restore both, add `next-themes`, and ship a theme toggle.
 
 ## Common workflows
@@ -158,7 +160,6 @@ The dashboard (`/`) intentionally has no `<PageNav />` because [`NavCards`](comp
 
 1. Create `app/<route>/page.tsx`. Server component by default; only add `'use client'` if you use hooks/state/event handlers.
 2. Add `{ href: '/<route>', label: '…' }` to `NAV` in `lib/nav.ts`.
-3. Add `<PageNav />` at the bottom of the page (after main content). Skip on routes that already have a richer "where to go next" affordance.
 
 ### Add a shadcn component
 
