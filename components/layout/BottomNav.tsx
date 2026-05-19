@@ -45,8 +45,8 @@ export function BottomNav() {
               >
                 <span
                   className={cn(
-                    'flex size-16 -translate-y-5 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105',
-                    isActive && 'ring-2 ring-ring ring-offset-2',
+                    'flex size-16 -translate-y-5 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-colors transition-transform hover:scale-105',
+                    isActive && 'bg-blue-600 hover:bg-blue-700',
                   )}
                 >
                   <IconPlusFilled className="size-7 shrink-0" />

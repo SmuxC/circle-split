@@ -6,7 +6,7 @@ import { Sidebar } from '@/components/layout/Sidebar';
 
 export function AppShell({ children }: { children: ReactNode }) {
   return (
-    <div className="grid min-h-screen grid-rows-[3.5rem_1fr] md:grid-cols-[240px_1fr]">
+    <div className="grid min-h-screen grid-rows-[5rem_1fr] md:grid-cols-[240px_1fr] md:grid-rows-[3.5rem_1fr]">
       <Header />
       <Sidebar />
       <main className="overflow-auto p-6 pb-24 md:pb-6">{children}</main>

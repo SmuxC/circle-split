@@ -46,7 +46,7 @@ export function UserAvatar({ className }: { className?: string }) {
   return (
     <div
       className={cn(
-        'flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full border bg-muted text-[10px] font-semibold text-muted-foreground',
+        'flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-full border bg-muted text-xs font-semibold text-muted-foreground',
         className,
       )}
       aria-label={address ? `Avatar for ${address}` : 'No wallet connected'}
