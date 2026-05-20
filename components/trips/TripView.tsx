@@ -28,6 +28,7 @@ import {
   type TripMessage,
   type TripSummary,
 } from '@/lib/xmtp/trips';
+import { computeTripDashboard } from '@/lib/xmtp/settlements';
 
 type View = 'chat' | 'invoices';
 
@@ -104,54 +105,10 @@ export function TripView({ conversationId }: { conversationId: string }) {
     return messages;
   }, [messages, view]);
 
-  const dashboard = useMemo(() => {
-    if (!summary) return null;
-    const paid = new Map<string, number>();
-    // Seed all current members at 0 so non-payers appear in the breakdown.
-    for (const m of summary.members) paid.set(m.toLowerCase(), 0);
-    let grand = 0;
-    for (const m of messages) {
-      if (m.kind !== 'expense') continue;
-      const amt = Number(m.payload.amount);
-      if (!isFinite(amt)) continue;
-      const p = m.payload.payer.toLowerCase();
-      paid.set(p, (paid.get(p) ?? 0) + amt);
-      grand += amt;
-    }
-    const members = Array.from(paid.keys());
-    const share = members.length > 0 ? grand / members.length : 0;
-    const net = members.map((addr) => ({
-      addr,
-      paid: paid.get(addr) ?? 0,
-      net: (paid.get(addr) ?? 0) - share,
-    }));
-
-    // Greedy settlement: biggest debtor pays biggest creditor until flat.
-    const EPS = 0.005;
-    const debtors = net
-      .filter((x) => x.net < -EPS)
-      .map((x) => ({ addr: x.addr, owe: -x.net }))
-      .sort((a, b) => b.owe - a.owe);
-    const creditors = net
-      .filter((x) => x.net > EPS)
-      .map((x) => ({ addr: x.addr, get: x.net }))
-      .sort((a, b) => b.get - a.get);
-    const settlements: { from: string; to: string; amount: number }[] = [];
-    let i = 0;
-    let j = 0;
-    while (i < debtors.length && j < creditors.length) {
-      const d = debtors[i];
-      const c = creditors[j];
-      const amt = Math.min(d.owe, c.get);
-      settlements.push({ from: d.addr, to: c.addr, amount: amt });
-      d.owe -= amt;
-      c.get -= amt;
-      if (d.owe < EPS) i++;
-      if (c.get < EPS) j++;
-    }
-
-    return { grand, share, breakdown: net, settlements };
-  }, [messages, summary]);
+  const dashboard = useMemo(
+    () => (summary ? computeTripDashboard(messages, summary.members) : null),
+    [messages, summary],
+  );
 
   async function handleSendText() {
     if (!group || !text.trim()) return;
