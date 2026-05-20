@@ -31,6 +31,7 @@ export function CreateTripSheet({ onCreated }: { onCreated?: () => void }) {
   const [membersText, setMembersText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [unreachable, setUnreachable] = useState<string[]>([]);
 
   const memberList = membersText
     .split(/[\s,]+/)
@@ -45,7 +46,27 @@ export function CreateTripSheet({ onCreated }: { onCreated?: () => void }) {
     if (!client || !address || !formValid) return;
     setSubmitting(true);
     setError(null);
+    setUnreachable([]);
     try {
+      // XMTP MLS requires every member to have an inbox already registered.
+      // Pre-flight with canMessage so we can surface unreachable addresses
+      // instead of hitting `GroupError::AddressNotFound` mid-creation.
+      const identifiers = memberList.map((m) => ({
+        identifier: m.toLowerCase(),
+        identifierKind: 0 as const,
+      }));
+      const reachable = await client.canMessage(identifiers);
+      const missing = memberList.filter(
+        (m) => !reachable.get(m.toLowerCase()),
+      );
+      if (missing.length > 0) {
+        setUnreachable(missing);
+        setError(
+          `${missing.length} address(es) have no XMTP identity yet. They must open an XMTP-enabled app once before you can invite them.`,
+        );
+        return;
+      }
+
       const trip = await createTrip(client, {
         name: name.trim(),
         currency: currency.trim() || 'EURe',
@@ -121,9 +142,16 @@ export function CreateTripSheet({ onCreated }: { onCreated?: () => void }) {
           </Field>
 
           {error && (
-            <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {error}
-            </p>
+            <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <p>{error}</p>
+              {unreachable.length > 0 && (
+                <ul className="mt-1 list-disc pl-4 font-mono text-xs">
+                  {unreachable.map((a) => (
+                    <li key={a}>{a}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
 
           <Button type="submit" size="lg" className="mt-2" disabled={!formValid || submitting}>

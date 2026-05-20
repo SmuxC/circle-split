@@ -12,6 +12,8 @@ type XmtpContextValue = {
   client: Client | null;
   status: Status;
   error: string | null;
+  /** Increments whenever a global XMTP stream emits — components dep on it to refresh. */
+  tick: number;
   connect: () => Promise<void>;
   disconnect: () => void;
 };
@@ -20,6 +22,7 @@ const XmtpContext = createContext<XmtpContextValue>({
   client: null,
   status: 'idle',
   error: null,
+  tick: 0,
   connect: async () => {},
   disconnect: () => {},
 });
@@ -29,6 +32,7 @@ export function XmtpProvider({ children }: { children: React.ReactNode }) {
   const [client, setClient] = useState<Client | null>(null);
   const [status, setStatus] = useState<Status>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
 
   // Address that owns the current client; if it changes (wallet rotation),
   // we tear the client down and require an explicit reconnect.
@@ -82,8 +86,46 @@ export function XmtpProvider({ children }: { children: React.ReactNode }) {
     }
   }, [address, isConnected, disconnect]);
 
+  // Live updates: subscribe to new conversations (invites) and to all incoming
+  // group messages. Bump `tick` on every event so dependent views refetch.
+  useEffect(() => {
+    if (!client) return;
+    let cancelled = false;
+    const bump = () => {
+      if (!cancelled) setTick((t) => t + 1);
+    };
+    let convStream: { end: () => Promise<unknown> } | null = null;
+    let msgStream: { end: () => Promise<unknown> } | null = null;
+
+    (async () => {
+      try {
+        // Initial network sync so cached state catches up before streams attach.
+        await client.conversations.sync();
+        bump();
+        // ConsentState: Unknown=0, Allowed=1. Include both so invites that
+        // haven't been explicitly accepted yet still surface and stream.
+        convStream = (await client.conversations.stream({ onValue: bump })) as {
+          end: () => Promise<unknown>;
+        };
+        msgStream = (await client.conversations.streamAllGroupMessages({
+          onValue: bump,
+          consentStates: [0, 1] as never,
+        })) as { end: () => Promise<unknown> };
+      } catch (e) {
+        // Streams can fail on transient network errors; surface but don't crash.
+        console.error('[xmtp] stream setup failed:', e);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      convStream?.end().catch(() => {});
+      msgStream?.end().catch(() => {});
+    };
+  }, [client]);
+
   return (
-    <XmtpContext.Provider value={{ client, status, error, connect, disconnect }}>
+    <XmtpContext.Provider value={{ client, status, error, tick, connect, disconnect }}>
       {children}
     </XmtpContext.Provider>
   );

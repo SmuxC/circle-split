@@ -16,7 +16,7 @@ import { CreateTripSheet } from './CreateTripSheet';
 
 export function TripList() {
   const { isConnected } = useWallet();
-  const { client, status, error, connect } = useXmtp();
+  const { client, status, error, tick, connect } = useXmtp();
   const [trips, setTrips] = useState<TripSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -38,7 +38,7 @@ export function TripList() {
     return () => {
       cancelled = true;
     };
-  }, [client, refreshKey]);
+  }, [client, refreshKey, tick]);
 
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 

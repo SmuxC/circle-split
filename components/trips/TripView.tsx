@@ -33,7 +33,7 @@ type View = 'chat' | 'invoices';
 const isAddress = (v: string) => /^0x[0-9a-fA-F]{40}$/.test(v.trim());
 
 export function TripView({ conversationId }: { conversationId: string }) {
-  const { client, status } = useXmtp();
+  const { client, status, tick } = useXmtp();
   const { address } = useWallet();
 
   const [group, setGroup] = useState<Group | null>(null);
@@ -96,7 +96,7 @@ export function TripView({ conversationId }: { conversationId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [client, conversationId, refreshKey]);
+  }, [client, conversationId, refreshKey, tick]);
 
   const visibleMessages = useMemo(() => {
     if (view === 'invoices') return messages.filter((m) => m.kind === 'expense');
@@ -155,7 +155,7 @@ export function TripView({ conversationId }: { conversationId: string }) {
   }
 
   async function handleAddMember() {
-    if (!group || !summary) return;
+    if (!group || !summary || !client) return;
     const m = newMember.trim();
     if (!isAddress(m)) {
       setAddError('Invalid address.');
@@ -164,6 +164,16 @@ export function TripView({ conversationId }: { conversationId: string }) {
     setAdding(true);
     setAddError(null);
     try {
+      // XMTP rejects addMembers for wallets without a registered inbox.
+      const reachable = await client.canMessage([
+        { identifier: m.toLowerCase(), identifierKind: 0 as const },
+      ]);
+      if (!reachable.get(m.toLowerCase())) {
+        setAddError(
+          'This wallet has no XMTP identity yet. They must open an XMTP-enabled app once before being added.',
+        );
+        return;
+      }
       await addTripMember(group, { tripId: summary.tripId, member: m });
       setNewMember('');
       setShowAddMember(false);

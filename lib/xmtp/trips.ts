@@ -36,7 +36,12 @@ export type TripSummary = {
  */
 export async function listTrips(client: Client): Promise<TripSummary[]> {
   await client.conversations.sync();
-  const groups = await client.conversations.listGroups();
+  // ConsentState: Unknown=0, Allowed=1. Include both so invitees see groups
+  // they haven't explicitly accepted yet (otherwise unaccepted invites would
+  // be filtered out and never surface).
+  const groups = await client.conversations.listGroups({
+    consentStates: [0, 1] as never,
+  });
   const trips: TripSummary[] = [];
   for (const g of groups) {
     if (!g.name?.startsWith(TRIP_NAME_PREFIX)) continue;
