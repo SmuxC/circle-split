@@ -4,6 +4,7 @@ import "./globals.css";
 
 import { AppShell } from "@/components/layout/AppShell";
 import { WalletProvider } from "@/components/wallet/WalletProvider";
+import { XmtpProvider } from "@/components/xmtp/XmtpProvider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -32,7 +33,9 @@ export default function RootLayout({
     >
       <body className="min-h-full">
         <WalletProvider>
-          <AppShell>{children}</AppShell>
+          <XmtpProvider>
+            <AppShell>{children}</AppShell>
+          </XmtpProvider>
         </WalletProvider>
       </body>
     </html>
