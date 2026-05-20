@@ -7,26 +7,49 @@ import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { cn, shortenAddress } from '@/lib/utils';
 
-// Subset of SearchResultProfile from @aboutcircles/sdk-rpc; redeclared so we
-// don't drag the package into the client bundle just for a type import.
-type SearchResultProfile = {
-  address: string;
-  name: string;
-  cid?: string;
-  avatarType?: string;
+// `circles_searchProfileByAddressOrName` returns a heterogeneous result list.
+// Top-match / address-search rows are enriched with `username`, `displayName`,
+// `picture`, etc. Tail rows are bare IPFS profile blobs (`name`,
+// `previewImageUrl`). The fields below are the union we read from.
+type SearchHit = {
+  // Address comes from the enriched shape's `address` (or `id`) field. Text-
+  // search tail rows omit it; some carry it inside a `namespaces` map of
+  // { [address]: cid }.
+  address?: string;
+  id?: string;
+  namespaces?: Record<string, string>;
+  name?: string;
+  displayName?: string;
+  username?: string | null;
   previewImageUrl?: string;
   imageUrl?: string;
-  // Pulled from the IPFS profile JSON (returned by circles_getProfileByCid).
-  // Only present when the profile actually stored one — older / non-Metri
-  // profiles can have it as null.
-  username?: string | null;
+  picture?: string;
 };
 
-// SDK currently has no ENS resolution — it's Gnosis Chain / Circles-only. Add
-// a separate Ethereum mainnet ENS resolver later if needed.
-//
-// circles_searchProfiles handles both names and full 0x… addresses on a single
-// endpoint, so we don't need to branch on input shape here.
+type SearchResponse = {
+  query: string;
+  searchType: 'address' | 'text';
+  results: SearchHit[];
+  hasMore: boolean;
+  nextCursor: string | null;
+};
+
+type SearchResultRow = {
+  address: string;
+  name: string; // display name
+  username?: string | null;
+  avatarUrl?: string;
+};
+
+function pickAddress(h: SearchHit): string | null {
+  if (h.address) return h.address;
+  if (h.id) return h.id;
+  if (h.namespaces) {
+    const [first] = Object.keys(h.namespaces);
+    if (first) return first;
+  }
+  return null;
+}
 
 export function FromCombobox() {
   const [open, setOpen] = useState(false);
@@ -34,7 +57,7 @@ export function FromCombobox() {
   const [loading, setLoading] = useState(false);
   // Tag results with the query that produced them so a stale fetch can't render
   // against a newer input value.
-  const [data, setData] = useState<{ query: string; items: SearchResultProfile[] }>({
+  const [data, setData] = useState<{ query: string; items: SearchResultRow[] }>({
     query: '',
     items: [],
   });
@@ -58,8 +81,8 @@ export function FromCombobox() {
     };
   }, [open]);
 
-  // Debounced Circles profile search. Tries each input as both a name fragment
-  // and a full address — the RPC endpoint handles both. Gated to ≥3 alphanumeric
+  // Debounced Circles profile search. `searchByAddressOrName` handles both
+  // free-text names and full 0x… addresses. Gated to ≥3 alphanumeric
   // characters to avoid hammering the indexer.
   useEffect(() => {
     const q = query.trim();
@@ -72,47 +95,55 @@ export function FromCombobox() {
       try {
         const { Sdk } = await import('@aboutcircles/sdk');
         const sdk = new Sdk();
-        const res = (await sdk.rpc.profile.searchProfiles(
-          q,
-          10,
-          0,
-        )) as unknown as SearchResultProfile[];
+        // `searchByAddressOrName` text-search response omits `address` /
+        // `id` / `namespaces` on all but the top-match rows, so it can't
+        // be used alone to list selectable wallets. Pair with
+        // `searchProfiles` (which always returns address + cid for every
+        // hit) and use `searchByAddressOrName` purely for username /
+        // displayName / picture enrichment.
+        const [hits, enrichRes] = (await Promise.all([
+          sdk.rpc.profile.searchProfiles(q, 20, 0),
+          sdk.rpc.profile.searchByAddressOrName(q, 20),
+        ])) as unknown as [
+          Array<{ address: string; cid?: string; name: string; avatarType?: string }>,
+          SearchResponse,
+        ];
         if (cancelled) return;
 
-        // searchProfiles only returns address/name/cid/avatarType. The full
-        // IPFS profile (with image + username) is one batch RPC away.
-        const cids = res.map((r) => r.cid).filter((c): c is string => !!c);
-        type FullProfile = {
-          previewImageUrl?: string;
-          imageUrl?: string;
-          username?: string | null;
-        };
-        let profiles: (FullProfile | null)[] = [];
-        if (cids.length) {
-          profiles = (await sdk.rpc.profile.getProfileByCidBatch(
-            cids,
-          )) as (FullProfile | null)[];
+        const enrichments = new Map<string, SearchHit>();
+        for (const h of enrichRes.results) {
+          const addr = pickAddress(h);
+          if (addr) enrichments.set(addr.toLowerCase(), h);
         }
+
+        // Fall back to IPFS profile image for rows without enrichment so
+        // every row still gets an avatar.
+        const cidsNeedingImage: (string | null)[] = hits.map((h) =>
+          enrichments.has(h.address.toLowerCase()) ? null : (h.cid ?? null),
+        );
+        const ipfs = cidsNeedingImage.some((c) => c)
+          ? ((await sdk.rpc.profile.getProfileByCidBatch(cidsNeedingImage)) as unknown as Array<
+              { previewImageUrl?: string; imageUrl?: string } | null
+            >)
+          : [];
         if (cancelled) return;
 
-        const byCid = new Map<string, FullProfile | null>();
-        let i = 0;
-        for (const r of res) {
-          if (r.cid) {
-            byCid.set(r.cid, profiles[i] ?? null);
-            i++;
-          }
-        }
-        const enriched: SearchResultProfile[] = res.map((r) => {
-          const p = r.cid ? byCid.get(r.cid) : null;
+        const items: SearchResultRow[] = hits.map((h, i) => {
+          const enriched = enrichments.get(h.address.toLowerCase());
+          const fallbackImg = ipfs[i];
           return {
-            ...r,
-            previewImageUrl: p?.previewImageUrl || r.previewImageUrl,
-            imageUrl: p?.imageUrl || r.imageUrl,
-            username: p?.username ?? null,
+            address: h.address,
+            name: enriched?.displayName ?? enriched?.name ?? h.name,
+            username: enriched?.username ?? null,
+            avatarUrl:
+              enriched?.picture ??
+              enriched?.previewImageUrl ??
+              enriched?.imageUrl ??
+              fallbackImg?.previewImageUrl ??
+              fallbackImg?.imageUrl,
           };
         });
-        setData({ query: q, items: enriched });
+        setData({ query: q, items });
       } catch {
         if (!cancelled) setData({ query: q, items: [] });
       } finally {
@@ -128,7 +159,6 @@ export function FromCombobox() {
   const trimmed = query.trim();
   const alnumCount = (trimmed.match(/[A-Za-z0-9]/g) ?? []).length;
   const tooShort = alnumCount < 3;
-  // Only render the fresh result set; stale items stay hidden.
   const fresh = !tooShort && data.query === trimmed ? data.items : [];
 
   return (
@@ -166,67 +196,61 @@ export function FromCombobox() {
             </div>
 
             <ul className="max-h-72 overflow-y-auto py-1">
-              {/* Below the alphanumeric minimum — prompt for more input. */}
               {tooShort && (
                 <li className="px-4 py-6 text-center text-sm text-muted-foreground">
                   Min 3 characters to search.
                 </li>
               )}
 
-              {/* Loading + no result yet for this query. */}
               {!tooShort && loading && fresh.length === 0 && (
                 <li className="px-4 py-6 text-center text-sm text-muted-foreground">
                   Searching…
                 </li>
               )}
 
-              {/* Empty result set (only show once the active query catches up). */}
               {!tooShort && !loading && data.query === trimmed && fresh.length === 0 && (
                 <li className="px-4 py-6 text-center text-sm text-muted-foreground">
                   No matches found.
                 </li>
               )}
 
-              {fresh.map((p) => {
-                const avatar = p.previewImageUrl ?? p.imageUrl;
-                return (
-                  <li key={p.address}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setQuery(p.name);
-                        setOpen(false);
-                      }}
-                      className="flex w-full items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-accent"
-                    >
-                      {avatar ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={avatar}
-                          alt=""
-                          className="size-8 shrink-0 rounded-full object-cover"
-                        />
-                      ) : (
-                        <span
-                          aria-hidden
-                          className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground"
-                        >
-                          <IconUserFilled className="size-4" />
-                        </span>
-                      )}
-                      <div className="flex flex-1 flex-col leading-tight">
-                        <span className="text-sm font-semibold">{p.name || 'Unnamed'}</span>
-                        {p.username && (
-                          <span className="text-xs text-muted-foreground">@{p.username}</span>
-                        )}
-                      </div>
-                      <span className="font-mono text-xs text-muted-foreground">
-                        {shortenAddress(p.address)}
+              {fresh.map((p) => (
+                <li key={p.address}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuery(p.name);
+                      setOpen(false);
+                    }}
+                    className="flex w-full items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-accent"
+                  >
+                    {p.avatarUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={p.avatarUrl}
+                        alt=""
+                        className="size-8 shrink-0 rounded-full object-cover"
+                      />
+                    ) : (
+                      <span
+                        aria-hidden
+                        className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground"
+                      >
+                        <IconUserFilled className="size-4" />
                       </span>
-                    </button>
-                  </li>
-                );
-              })}
+                    )}
+                    <div className="flex flex-1 flex-col leading-tight">
+                      <span className="text-sm font-semibold">{p.name || 'Unnamed'}</span>
+                      {p.username && (
+                        <span className="text-xs text-muted-foreground">@{p.username}</span>
+                      )}
+                    </div>
+                    <span className="font-mono text-xs text-muted-foreground">
+                      {shortenAddress(p.address)}
+                    </span>
+                  </button>
+                </li>
+              ))}
             </ul>
           </Card>
         </div>
