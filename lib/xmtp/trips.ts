@@ -26,7 +26,13 @@ export type TripSummary = {
   creator: string;
   members: string[];
   createdAt: number;
+  // XMTP consent: 0=Unknown (pending invite), 1=Allowed, 2=Denied.
+  consentState: number;
 };
+
+export const CONSENT_UNKNOWN = 0;
+export const CONSENT_ALLOWED = 1;
+export const CONSENT_DENIED = 2;
 
 /**
  * Lists trip-init groups for the current client. Filters by:
@@ -38,9 +44,9 @@ export async function listTrips(client: Client): Promise<TripSummary[]> {
   await client.conversations.sync();
   // ConsentState: Unknown=0, Allowed=1. Include both so invitees see groups
   // they haven't explicitly accepted yet (otherwise unaccepted invites would
-  // be filtered out and never surface).
+  // be filtered out and never surface). Caller splits by consentState.
   const groups = await client.conversations.listGroups({
-    consentStates: [0, 1] as never,
+    consentStates: [CONSENT_UNKNOWN, CONSENT_ALLOWED] as never,
   });
   const trips: TripSummary[] = [];
   for (const g of groups) {
@@ -52,12 +58,25 @@ export async function listTrips(client: Client): Promise<TripSummary[]> {
   return trips;
 }
 
+export async function setTripConsent(
+  client: Client,
+  conversationId: string,
+  state: number,
+): Promise<void> {
+  const g = (await client.conversations.getConversationById(conversationId)) as
+    | Group
+    | undefined;
+  if (!g) return;
+  await g.updateConsentState(state as never);
+}
+
 /**
  * Loads + validates the trip-init message from an XMTP group. Returns null
  * if the group doesn't carry a valid trip-init.
  */
 export async function loadTripSummary(group: Group): Promise<TripSummary | null> {
   await group.sync();
+  const consentState = await group.consentState();
   const msgs = await group.messages({ limit: 50n });
   // Oldest → newest. Trip-init is the canonical first matching message.
   const ordered = [...msgs].sort((a, b) => Number(a.sentAtNs - b.sentAtNs));
@@ -78,6 +97,7 @@ export async function loadTripSummary(group: Group): Promise<TripSummary | null>
     creator: payload.creator,
     members: payload.members,
     createdAt: payload.ts,
+    consentState: consentState as unknown as number,
   };
 }
 
@@ -136,6 +156,9 @@ export async function createTrip(
   };
   await group.send(tripInitCodec.encode(payload));
 
+  // Creator's own group is auto-allowed.
+  await group.updateConsentState(CONSENT_ALLOWED as never);
+
   return {
     conversationId: group.id,
     tripId,
@@ -144,6 +167,7 @@ export async function createTrip(
     creator: args.creator.toLowerCase(),
     members: allMembers,
     createdAt: payload.ts,
+    consentState: CONSENT_ALLOWED,
   };
 }
 

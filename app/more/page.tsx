@@ -1,3 +1,4 @@
+import { DonateCard } from '@/components/donate/DonateCard';
 import { ProfileLookup } from '@/components/profile/ProfileLookup';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ConnectionCard } from '@/components/wallet/ConnectionCard';
@@ -15,6 +16,11 @@ export default function MorePage() {
       </div>
 
       <ConnectionCard />
+
+      <section className="space-y-2">
+        <h2 className="text-base font-semibold tracking-tight">Support this miniapp</h2>
+        <DonateCard />
+      </section>
 
       <SignInDemo />
 
