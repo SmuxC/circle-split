@@ -1,68 +1,105 @@
-import { IconAffiliate, IconChevronRight } from '@tabler/icons-react';
-import Image from 'next/image';
+'use client';
 
-import { Card, CardDescription, CardTitle } from '@/components/ui/card';
+import { useState } from 'react';
+
+import { IconCamera, IconGif, IconPhoto, type Icon as TablerIcon } from '@tabler/icons-react';
+
+import { useNewMode } from '@/components/new/new-mode';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { FromCombobox } from '@/components/wallet/FromCombobox';
+import { MessageCard } from '@/components/wallet/MessageCard';
+import { TOKENS, TokenDrawer, type Token } from '@/components/wallet/TokenDrawer';
+
+const ATTACHMENTS: { icon: TablerIcon; label: string }[] = [
+  { icon: IconGif, label: 'GIF' },
+  { icon: IconPhoto, label: 'Photo' },
+  { icon: IconCamera, label: 'Take photo' },
+];
 
 export default function NewPage() {
+  const { mode } = useNewMode();
+  const [amount, setAmount] = useState('');
+  const [message, setMessage] = useState('');
+  const [token, setToken] = useState<Token>(TOKENS[0]);
+
+  if (mode === 'split') {
+    return (
+      <div className="flex min-h-[40vh] items-center justify-center">
+        <span className="text-base font-medium text-muted-foreground">Soon</span>
+      </div>
+    );
+  }
+
   return (
-    <div className="relative mx-auto flex max-w-4xl flex-col gap-4">
-      {/* Mobile-only extension of the primary header bar; first card overlaps
-          it by ~25% of its height.
-          Math (after bumping the split bill card):
-            - main has p-6 top → 24px gap between header bottom and card top.
-            - Card height on mobile ≈ py-12 (96) + content (title 25 + gap 4 +
-              ~3-line desc 60) ≈ 185px.
-            - 25% of 185 ≈ 46px overlap.
-            - Band must cover the 24px gap PLUS the 46px overlap ≈ 70px. */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute -inset-x-6 -top-6 h-[70px] bg-primary md:hidden"
-      />
-
-      {/* Main card — Split bill (sits on top of the bar extension).
-          Card is taller (py-12) and reserves pr-44 for the image. Image is
-          enlarged, mirrored horizontally, and pushed past the bottom-right
-          corner with negative offsets so the card's overflow-hidden crops the
-          right and bottom edges. */}
-      <Card className="relative z-10 w-full cursor-pointer py-12 pl-6 pr-44 transition-colors hover:bg-accent/40">
-        <div className="flex flex-col gap-1">
-          <CardTitle className="text-lg">Split bill</CardTitle>
-          <CardDescription>
-            Divide an expense between trusted Circles users.
-          </CardDescription>
+    <div className="mx-auto flex max-w-4xl flex-col gap-4">
+      <div className="flex flex-col gap-2">
+        <div className="px-1">
+          <span className="text-sm font-medium text-muted-foreground">Amount</span>
         </div>
-        <Image
-          src="/split-bill.png"
-          alt=""
-          width={450}
-          height={450}
-          className="pointer-events-none absolute -bottom-8 -right-8 size-48"
-        />
-      </Card>
 
-      {/* Main card — Create payment request (same size/style as split bill). */}
-      <Card className="relative w-full cursor-pointer py-12 pl-6 pr-44 transition-colors hover:bg-accent/40">
-        <div className="flex flex-col gap-1">
-          <CardTitle className="text-lg">Create payment request</CardTitle>
-          <CardDescription>
-            Ask one or more people for a specific amount.
-          </CardDescription>
+        {/* Card holds the input + button flush — no inner padding so the
+            outer Card ring is the only border. Input padding gives text
+            margin; the button's border-l draws the only separator. */}
+        <Card className="overflow-hidden p-0 py-0">
+          <div className="flex items-stretch">
+            <Input
+              type="number"
+              inputMode="decimal"
+              min={0}
+              placeholder="0.00"
+              value={amount}
+              onKeyDown={(e) => {
+                // Block negative sign and scientific notation entry.
+                if (e.key === '-' || e.key === 'e' || e.key === 'E') e.preventDefault();
+              }}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === '' || Number(v) >= 0) setAmount(v);
+              }}
+              className="h-14 flex-1 rounded-none border-0 bg-transparent px-4 text-2xl font-semibold focus-visible:ring-0 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+            />
+            {/* Currency selector — opens a bottom drawer with the token list. */}
+            <TokenDrawer value={token} onChange={setToken} />
+          </div>
+        </Card>
+      </div>
+
+      {/* From — input with a dropdown of recent contacts. */}
+      <div className="flex flex-col gap-2">
+        <div className="px-1">
+          <span className="text-sm font-medium text-muted-foreground">From</span>
         </div>
-        <Image
-          src="/invoice.png"
-          alt=""
-          width={450}
-          height={450}
-          className="pointer-events-none absolute -bottom-8 -right-8 size-48"
-        />
-      </Card>
+        <FromCombobox />
+      </div>
 
-      {/* Bar — Create group */}
-      <Card className="flex w-full cursor-pointer flex-row items-center gap-3 px-4 py-3 transition-colors hover:bg-accent/40">
-        <IconAffiliate className="size-5 shrink-0 text-muted-foreground" />
-        <span className="flex-1 text-sm font-medium">Create group</span>
-        <IconChevronRight className="size-4 shrink-0 text-muted-foreground" />
-      </Card>
+      {/* Message — text input with quick-pick emoji row. */}
+      <div className="flex flex-col gap-2">
+        <div className="px-1">
+          <span className="text-sm font-medium text-muted-foreground">Message</span>
+        </div>
+        <MessageCard value={message} onChange={setMessage} />
+      </div>
+
+      {/* Attachments — own section, 3 equal columns, no separators. */}
+      <div className="flex">
+        {ATTACHMENTS.map(({ icon: Icon, label }) => (
+          <button
+            key={label}
+            type="button"
+            className="flex flex-1 flex-col items-center gap-1 rounded-md py-2 text-xs font-medium transition-colors hover:bg-accent"
+          >
+            <Icon className="size-6 shrink-0" />
+            <span>{label}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* Submit. */}
+      <Button type="button" size="lg" className="h-14 w-full text-base">
+        Request {token.symbol}
+      </Button>
     </div>
   );
 }
