@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  IconArrowRight,
   IconLoader2,
   IconMessage,
   IconReceiptEuro,
@@ -8,7 +9,7 @@ import {
   IconUserPlus,
 } from '@tabler/icons-react';
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 
 import type { Group } from '@xmtp/browser-sdk';
 
@@ -103,18 +104,54 @@ export function TripView({ conversationId }: { conversationId: string }) {
     return messages;
   }, [messages, view]);
 
-  const totals = useMemo(() => {
-    const sums = new Map<string, number>();
+  const dashboard = useMemo(() => {
+    if (!summary) return null;
+    const paid = new Map<string, number>();
+    // Seed all current members at 0 so non-payers appear in the breakdown.
+    for (const m of summary.members) paid.set(m.toLowerCase(), 0);
     let grand = 0;
     for (const m of messages) {
       if (m.kind !== 'expense') continue;
       const amt = Number(m.payload.amount);
       if (!isFinite(amt)) continue;
-      sums.set(m.payload.payer, (sums.get(m.payload.payer) ?? 0) + amt);
+      const p = m.payload.payer.toLowerCase();
+      paid.set(p, (paid.get(p) ?? 0) + amt);
       grand += amt;
     }
-    return { byPayer: sums, grand };
-  }, [messages]);
+    const members = Array.from(paid.keys());
+    const share = members.length > 0 ? grand / members.length : 0;
+    const net = members.map((addr) => ({
+      addr,
+      paid: paid.get(addr) ?? 0,
+      net: (paid.get(addr) ?? 0) - share,
+    }));
+
+    // Greedy settlement: biggest debtor pays biggest creditor until flat.
+    const EPS = 0.005;
+    const debtors = net
+      .filter((x) => x.net < -EPS)
+      .map((x) => ({ addr: x.addr, owe: -x.net }))
+      .sort((a, b) => b.owe - a.owe);
+    const creditors = net
+      .filter((x) => x.net > EPS)
+      .map((x) => ({ addr: x.addr, get: x.net }))
+      .sort((a, b) => b.get - a.get);
+    const settlements: { from: string; to: string; amount: number }[] = [];
+    let i = 0;
+    let j = 0;
+    while (i < debtors.length && j < creditors.length) {
+      const d = debtors[i];
+      const c = creditors[j];
+      const amt = Math.min(d.owe, c.get);
+      settlements.push({ from: d.addr, to: c.addr, amount: amt });
+      d.owe -= amt;
+      c.get -= amt;
+      if (d.owe < EPS) i++;
+      if (c.get < EPS) j++;
+    }
+
+    return { grand, share, breakdown: net, settlements };
+  }, [messages, summary]);
 
   async function handleSendText() {
     if (!group || !text.trim()) return;
@@ -277,23 +314,131 @@ export function TripView({ conversationId }: { conversationId: string }) {
           </div>
         </div>
 
-        {/* Totals */}
-        <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3 text-xs">
-          <span className="text-muted-foreground">Totals:</span>
-          <span className="font-mono font-semibold">
-            {totals.grand.toFixed(2)} {summary.currency}
-          </span>
-          {[...totals.byPayer.entries()].map(([payer, amt]) => (
-            <span
-              key={payer}
-              className="rounded bg-muted px-2 py-0.5 font-mono text-[11px]"
-              title={payer}
-            >
-              {shortenAddress(payer)}: {amt.toFixed(2)}
-            </span>
-          ))}
-        </div>
       </Card>
+
+      {/* Dashboard */}
+      {dashboard && (
+        <Card className="flex flex-col gap-4 px-4 py-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                Total spent
+              </p>
+              <p className="font-mono text-2xl font-semibold">
+                {dashboard.grand.toFixed(2)} {summary.currency}
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                Equal share
+              </p>
+              <p className="font-mono text-sm">
+                {dashboard.share.toFixed(2)} {summary.currency}
+              </p>
+            </div>
+          </div>
+
+          {/* Per-member breakdown */}
+          <div className="flex flex-col gap-1">
+            <p className="text-xs font-semibold text-muted-foreground">
+              Paid vs share
+            </p>
+            <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 gap-y-1 text-xs">
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                Member
+              </div>
+              <div className="text-right text-[10px] uppercase tracking-wide text-muted-foreground">
+                Paid
+              </div>
+              <div className="text-right text-[10px] uppercase tracking-wide text-muted-foreground">
+                Net
+              </div>
+              {dashboard.breakdown.map((row) => {
+                const mine = row.addr === (address ?? '').toLowerCase();
+                const cls =
+                  row.net > 0.005
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : row.net < -0.005
+                      ? 'text-rose-600 dark:text-rose-400'
+                      : 'text-muted-foreground';
+                return (
+                  <Fragment key={row.addr}>
+                    <span
+                      className={cn(
+                        'font-mono',
+                        mine && 'font-semibold text-foreground',
+                      )}
+                      title={row.addr}
+                    >
+                      {shortenAddress(row.addr)}
+                      {mine && ' (you)'}
+                    </span>
+                    <span className="text-right font-mono">
+                      {row.paid.toFixed(2)}
+                    </span>
+                    <span className={cn('text-right font-mono', cls)}>
+                      {row.net > 0 ? '+' : ''}
+                      {row.net.toFixed(2)}
+                    </span>
+                  </Fragment>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Settlements */}
+          <div className="flex flex-col gap-1">
+            <p className="text-xs font-semibold text-muted-foreground">
+              Who pays whom
+            </p>
+            {dashboard.settlements.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                All settled — no balances to clear.
+              </p>
+            ) : (
+              <ul className="flex flex-col gap-1 text-xs">
+                {dashboard.settlements.map((s, i) => {
+                  const fromMe = s.from === (address ?? '').toLowerCase();
+                  const toMe = s.to === (address ?? '').toLowerCase();
+                  return (
+                    <li
+                      key={`${s.from}-${s.to}-${i}`}
+                      className="flex items-center justify-between gap-2 rounded-md bg-muted/60 px-2 py-1.5"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <span
+                          className={cn(
+                            'font-mono',
+                            fromMe && 'font-semibold text-rose-600 dark:text-rose-400',
+                          )}
+                          title={s.from}
+                        >
+                          {shortenAddress(s.from)}
+                          {fromMe && ' (you)'}
+                        </span>
+                        <IconArrowRight className="size-3 text-muted-foreground" />
+                        <span
+                          className={cn(
+                            'font-mono',
+                            toMe && 'font-semibold text-emerald-600 dark:text-emerald-400',
+                          )}
+                          title={s.to}
+                        >
+                          {shortenAddress(s.to)}
+                          {toMe && ' (you)'}
+                        </span>
+                      </span>
+                      <span className="font-mono font-semibold">
+                        {s.amount.toFixed(2)} {summary.currency}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </Card>
+      )}
 
       {/* Add-member modal */}
       {showAddMember && (
