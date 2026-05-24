@@ -21,6 +21,7 @@ import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { GifDrawer } from '@/components/wallet/GifDrawer';
+import { useChatContext } from '@/components/layout/ChatContext';
 import { useXmtp } from '@/components/xmtp/XmtpProvider';
 import { useWallet } from '@/hooks/use-wallet';
 import { cn, shortenAddress } from '@/lib/utils';
@@ -40,6 +41,7 @@ import type { BillSplit, BillSplitPayment } from '@/lib/xmtp/codecs';
 export function DmView({ conversationId }: { conversationId: string }) {
   const { client, status, tick, storageWarning } = useXmtp();
   const { address } = useWallet();
+  const { setChat } = useChatContext();
   const [dm, setDm] = useState<Dm | null>(null);
   const [peer, setPeer] = useState<string>('');
   const [groupName, setGroupName] = useState<string | null>(null);
@@ -105,6 +107,13 @@ export function DmView({ conversationId }: { conversationId: string }) {
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages]);
+
+  useEffect(() => {
+    if (loading || (!peer && !groupName)) return;
+    const name = groupName ?? shortenAddress(peer);
+    setChat({ name, backUrl: '/groups' });
+    return () => setChat(null);
+  }, [peer, groupName, loading, setChat]);
 
   const handleSendText = async () => {
     if (!dm || !text.trim()) return;
@@ -250,37 +259,33 @@ export function DmView({ conversationId }: { conversationId: string }) {
     );
   }
 
-  return (
-    <div className="flex h-[calc(100vh-12rem)] flex-col gap-3">
-      <Card className="flex items-center gap-3 px-3 py-2">
-        <div className="flex flex-col leading-tight">
-          <span className="text-xs uppercase tracking-wide text-muted-foreground">
-            {groupName ? 'Group' : 'DM'}
-          </span>
-          <span className="text-sm font-semibold" title={groupName ?? peer}>
-            {groupName ?? (peer ? shortenAddress(peer) : '…')}
-          </span>
-        </div>
-      </Card>
+  const anySheetOpen = crcOpen || !!payReq || !!debtPay;
 
+  return (
+    <div className="flex h-full flex-col">
       {storageWarning && (
-        <p className="rounded-md bg-amber-500/10 px-3 py-2 text-center text-xs text-amber-700">
+        <p className="shrink-0 rounded-none bg-amber-500/10 px-3 py-2 text-center text-xs text-amber-700">
           {storageWarning}
         </p>
       )}
 
       {groupName && debts.length > 0 && (
-        <DebtOverview
-          debts={debts}
-          onPay={setDebtPay}
-          onPayAll={handlePayAllDebts}
-          payingAll={payingAllDebts}
-        />
+        <div className="shrink-0 px-3 pt-3">
+          <DebtOverview
+            debts={debts}
+            onPay={setDebtPay}
+            onPayAll={handlePayAllDebts}
+            payingAll={payingAllDebts}
+          />
+        </div>
       )}
 
       <div
         ref={scrollRef}
-        className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto rounded-lg border bg-muted/30 p-3"
+        className={cn(
+          'flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 pt-3',
+          anySheetOpen ? 'pb-[22rem] md:pb-3' : 'pb-32 md:pb-3',
+        )}
       >
         {loading && (
           <div className="flex flex-col gap-2">
@@ -308,95 +313,97 @@ export function DmView({ conversationId }: { conversationId: string }) {
           ))}
       </div>
 
-      {crcOpen && (
-        <CrcTransferSheet
-          myAddress={address ?? ''}
-          peerAddress={peer}
-          onSend={handleCrcSend}
-          onClose={() => setCrcOpen(false)}
-          sending={sending}
-        />
-      )}
-      {payReq && (
-        <CrcTransferSheet
-          myAddress={address ?? ''}
-          peerAddress={peer}
-          onSend={handlePayReqSend}
-          onClose={() => setPayReq(null)}
-          sending={sending}
-          initialAmount={payReq.amount}
-          initialNote={payReq.note}
-          title="Pay Request"
-        />
-      )}
-      {debtPay && (
-        <CrcTransferSheet
-          myAddress={address ?? ''}
-          peerAddress={debtPay.counterparty}
-          onSend={(amt, note) => handleDebtPay(debtPay, amt, note)}
-          onClose={() => setDebtPay(null)}
-          sending={sending}
-          initialAmount={debtPay.amount.toString()}
-          initialNote={`Bill: ${debtPay.description}`}
-          title={`Pay ${shortenAddress(debtPay.counterparty)}`}
-        />
-      )}
-
-      <Card className="flex-row items-center gap-2 px-2 py-2">
-        <GifDrawer
-          onSelect={handlePickGif}
-          trigger={
+      {/* Input island — fixed above bottom nav on mobile, static at bottom on desktop */}
+      <div className="fixed inset-x-0 bottom-[4.5rem] z-50 flex flex-col gap-2 px-3 pb-2 md:static md:bottom-auto md:inset-auto md:px-3 md:pb-3">
+        {crcOpen && (
+          <CrcTransferSheet
+            myAddress={address ?? ''}
+            peerAddress={peer}
+            onSend={handleCrcSend}
+            onClose={() => setCrcOpen(false)}
+            sending={sending}
+          />
+        )}
+        {payReq && (
+          <CrcTransferSheet
+            myAddress={address ?? ''}
+            peerAddress={peer}
+            onSend={handlePayReqSend}
+            onClose={() => setPayReq(null)}
+            sending={sending}
+            initialAmount={payReq.amount}
+            initialNote={payReq.note}
+            title="Pay Request"
+          />
+        )}
+        {debtPay && (
+          <CrcTransferSheet
+            myAddress={address ?? ''}
+            peerAddress={debtPay.counterparty}
+            onSend={(amt, note) => handleDebtPay(debtPay, amt, note)}
+            onClose={() => setDebtPay(null)}
+            sending={sending}
+            initialAmount={debtPay.amount.toString()}
+            initialNote={`Bill: ${debtPay.description}`}
+            title={`Pay ${shortenAddress(debtPay.counterparty)}`}
+          />
+        )}
+        <Card className="flex-row items-center gap-2 px-2 py-2 shadow-lg">
+          <GifDrawer
+            onSelect={handlePickGif}
+            trigger={
+              <button
+                type="button"
+                aria-label="Send GIF"
+                className="grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent"
+              >
+                <IconGif className="size-5" />
+              </button>
+            }
+          />
+          {!groupName && (
             <button
               type="button"
-              aria-label="Send GIF"
-              className="grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent"
+              aria-label="Send CRC"
+              onClick={() => { setCrcOpen((o) => !o); setPayReq(null); }}
+              className={cn(
+                'grid size-9 shrink-0 place-items-center rounded-md transition-colors',
+                crcOpen
+                  ? 'bg-accent text-foreground'
+                  : 'text-muted-foreground hover:bg-accent',
+              )}
             >
-              <IconGif className="size-5" />
+              <IconCoins className="size-5" />
             </button>
-          }
-        />
-        {!groupName && (
-          <button
-            type="button"
-            aria-label="Send CRC"
-            onClick={() => { setCrcOpen((o) => !o); setPayReq(null); }}
-            className={cn(
-              'grid size-9 shrink-0 place-items-center rounded-md transition-colors',
-              crcOpen
-                ? 'bg-accent text-foreground'
-                : 'text-muted-foreground hover:bg-accent',
-            )}
-          >
-            <IconCoins className="size-5" />
-          </button>
-        )}
-        <Input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              handleSendText();
-            }
-          }}
-          placeholder="Message"
-          disabled={sending}
-          className="h-9 flex-1 border-0 bg-transparent focus-visible:ring-0"
-        />
-        <Button
-          type="button"
-          size="sm"
-          onClick={handleSendText}
-          disabled={sending || !text.trim()}
-          className="h-9"
-        >
-          {sending ? (
-            <IconLoader2 className="size-4 animate-spin" />
-          ) : (
-            <IconSend className="size-4" />
           )}
-        </Button>
-      </Card>
+          <Input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSendText();
+              }
+            }}
+            placeholder="Message"
+            disabled={sending}
+            className="h-9 flex-1 border-0 bg-transparent focus-visible:ring-0"
+          />
+          <Button
+            type="button"
+            size="sm"
+            onClick={handleSendText}
+            disabled={sending || !text.trim()}
+            className="h-9"
+          >
+            {sending ? (
+              <IconLoader2 className="size-4 animate-spin" />
+            ) : (
+              <IconSend className="size-4" />
+            )}
+          </Button>
+        </Card>
+      </div>
     </div>
   );
 }

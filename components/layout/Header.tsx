@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 import { CirclesLogo } from '@/components/brand/CirclesLogo';
+import { useChatContext } from '@/components/layout/ChatContext';
 import { CurrentPage } from '@/components/layout/CurrentPage';
 import { NewModePill } from '@/components/layout/NewModePill';
 import { WalletStatus } from '@/components/wallet/WalletStatus';
@@ -14,12 +15,28 @@ export function Header() {
   const pathname = usePathname();
   const back = BACK_BAR[pathname];
   const isNew = pathname === '/new';
+  const { chat } = useChatContext();
 
   return (
     <header className="col-span-full border-b">
       {/* Mobile header — primary bar; px-6 matches main's p-6 alignment. */}
       <div className="bg-primary text-primary-foreground md:hidden">
-        {isNew ? (
+        {chat ? (
+          <div className="relative flex h-14 items-center px-3">
+            <Link
+              href={chat.backUrl}
+              aria-label="Back"
+              className="-ml-1 flex size-9 items-center justify-center rounded-full text-primary-foreground transition-colors hover:bg-primary-foreground/10"
+            >
+              <IconChevronLeft className="size-6 shrink-0" />
+            </Link>
+            <div className="pointer-events-none absolute inset-x-0 flex justify-center px-16">
+              <span className="max-w-full truncate text-base font-semibold tracking-tight">
+                {chat.name}
+              </span>
+            </div>
+          </div>
+        ) : isNew ? (
           <>
             {/* Row 1: logo (left) + centered title. */}
             <div className="relative flex h-14 items-center px-6">
@@ -60,6 +77,7 @@ export function Header() {
           </div>
         )}
       </div>
+
 
       {/* Desktop header — px-6 matches main's p-6 alignment. */}
       <div className="hidden h-14 items-center justify-between bg-background px-6 md:flex">
