@@ -1,17 +1,12 @@
 'use client';
 
-import Image from 'next/image';
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 
 import {
-  IconCamera,
   IconCreditCard,
-  IconGif,
   IconLoader2,
-  IconPhoto,
   IconPlugConnected,
   IconReceipt,
-  IconX,
 } from '@tabler/icons-react';
 
 import { useNewMode } from '@/components/new/new-mode';
@@ -19,16 +14,11 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { FromCombobox } from '@/components/wallet/FromCombobox';
-import { GifDrawer } from '@/components/wallet/GifDrawer';
 import { MessageCard } from '@/components/wallet/MessageCard';
 import { ShareRequestSheet, type ShareRequest } from '@/components/wallet/ShareRequestSheet';
 import { TOKENS, TokenDrawer, type Token } from '@/components/wallet/TokenDrawer';
 import { useXmtp } from '@/components/xmtp/XmtpProvider';
 import { useWallet } from '@/hooks/use-wallet';
-
-type Attachment =
-  | { kind: 'file'; id: string; url: string; name: string; file: File }
-  | { kind: 'gif'; id: string; url: string; name: string };
 
 export default function NewPage() {
   const { mode } = useNewMode();
@@ -43,47 +33,6 @@ export default function NewPage() {
   const [shareReq, setShareReq] = useState<ShareRequest | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [sentNotice, setSentNotice] = useState<string | null>(null);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const attachmentsRef = useRef<Attachment[]>([]);
-  const cameraInputRef = useRef<HTMLInputElement>(null);
-  const galleryInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    attachmentsRef.current = attachments;
-  }, [attachments]);
-
-  // Revoke object URLs on unmount. Only 'file' kind owns a blob URL; 'gif'
-  // points at a static asset and must not be revoked.
-  useEffect(() => {
-    return () => {
-      attachmentsRef.current.forEach((a) => {
-        if (a.kind === 'file') URL.revokeObjectURL(a.url);
-      });
-    };
-  }, []);
-
-  const addFiles = (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    const next: Attachment[] = [];
-    for (const file of Array.from(files)) {
-      if (!file.type.startsWith('image/')) continue;
-      next.push({
-        kind: 'file',
-        id: `${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
-        name: file.name,
-        url: URL.createObjectURL(file),
-        file,
-      });
-    }
-    if (next.length > 0) setAttachments((prev) => [...prev, ...next]);
-  };
-
-  const addGif = (gif: { id: string; src: string; name: string }) => {
-    setAttachments((prev) => [
-      ...prev,
-      { kind: 'gif', id: `gif-${gif.id}-${Math.random().toString(36).slice(2, 6)}`, name: gif.name, url: gif.src },
-    ]);
-  };
 
   const buildRequestUrl = (addr: string) => {
     const base = typeof window !== 'undefined' ? window.location.origin : '';
@@ -130,16 +79,6 @@ export default function NewPage() {
         return;
       }
 
-      // Gifs travel as plaintext URLs (static public assets). Photos are
-      // E2E-encrypted, uploaded to Vercel Blob, and travel as
-      // RemoteAttachment metadata inside the XMTP payload.
-      const gifAttachments = attachments
-        .filter((a) => a.kind === 'gif')
-        .map((a) => a.url);
-      const files = attachments
-        .filter((a): a is Extract<Attachment, { kind: 'file' }> => a.kind === 'file')
-        .map((a) => a.file);
-
       const { sendPaymentRequest } = await import('@/lib/xmtp/requests');
       await sendPaymentRequest(client, {
         recipient: recipient.address,
@@ -147,34 +86,19 @@ export default function NewPage() {
         amount,
         symbol: token.symbol,
         message: message.trim() || undefined,
-        attachments: gifAttachments,
-        files,
         mode: isSplit ? 'split' : 'request',
       });
 
       setSentNotice(
         `Sent ${isSplit ? 'split' : 'request'} for ${amount} ${token.symbol} to ${recipient.name}.`,
       );
-      // Clear the form (recipient stays so user can iterate).
       setAmount('');
       setMessage('');
-      attachments.forEach((a) => {
-        if (a.kind === 'file') URL.revokeObjectURL(a.url);
-      });
-      setAttachments([]);
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : String(e));
     } finally {
       setSubmitting(false);
     }
-  };
-
-  const removeAttachment = (id: string) => {
-    setAttachments((prev) => {
-      const target = prev.find((a) => a.id === id);
-      if (target && target.kind === 'file') URL.revokeObjectURL(target.url);
-      return prev.filter((a) => a.id !== id);
-    });
   };
 
   if (!isConnected) {
@@ -276,90 +200,6 @@ export default function NewPage() {
         </div>
         <MessageCard value={message} onChange={setMessage} />
       </div>
-
-      {/* Attachment previews — thumbnails with remove buttons. */}
-      {attachments.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {attachments.map((a) => (
-            <div
-              key={a.id}
-              className="relative size-20 overflow-hidden rounded-md border bg-muted"
-            >
-              <Image
-                src={a.url}
-                alt={a.name}
-                fill
-                sizes="80px"
-                className="object-cover"
-                unoptimized
-              />
-              <button
-                type="button"
-                onClick={() => removeAttachment(a.id)}
-                aria-label={`Remove ${a.name}`}
-                className="absolute right-1 top-1 grid size-5 place-items-center rounded-full bg-background/90 text-foreground shadow hover:bg-background"
-              >
-                <IconX className="size-3" />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Attachments — own section, 3 equal columns, no separators. */}
-      <div className="flex">
-        <GifDrawer
-          onSelect={addGif}
-          trigger={
-            <button
-              type="button"
-              className="flex flex-1 flex-col items-center gap-1 rounded-md py-2 text-xs font-medium transition-colors hover:bg-accent"
-            >
-              <IconGif className="size-6 shrink-0" />
-              <span>GIF</span>
-            </button>
-          }
-        />
-        <button
-          type="button"
-          onClick={() => galleryInputRef.current?.click()}
-          className="flex flex-1 flex-col items-center gap-1 rounded-md py-2 text-xs font-medium transition-colors hover:bg-accent"
-        >
-          <IconPhoto className="size-6 shrink-0" />
-          <span>Photo</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => cameraInputRef.current?.click()}
-          className="flex flex-1 flex-col items-center gap-1 rounded-md py-2 text-xs font-medium transition-colors hover:bg-accent"
-        >
-          <IconCamera className="size-6 shrink-0" />
-          <span>Take photo</span>
-        </button>
-      </div>
-
-      <input
-        ref={galleryInputRef}
-        type="file"
-        accept="image/*"
-        multiple
-        hidden
-        onChange={(e) => {
-          addFiles(e.target.files);
-          e.target.value = '';
-        }}
-      />
-      <input
-        ref={cameraInputRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        hidden
-        onChange={(e) => {
-          addFiles(e.target.files);
-          e.target.value = '';
-        }}
-      />
 
       {submitError && (
         <p className="rounded-md bg-destructive/10 px-3 py-2 text-center text-xs text-destructive">

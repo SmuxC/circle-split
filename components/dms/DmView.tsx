@@ -3,10 +3,9 @@
 import {
   IconArrowDownLeft,
   IconArrowUpRight,
-  IconCamera,
+  IconCoins,
   IconGif,
   IconLoader2,
-  IconPhoto,
   IconSend,
   IconX,
 } from '@tabler/icons-react';
@@ -22,11 +21,12 @@ import { GifDrawer } from '@/components/wallet/GifDrawer';
 import { useXmtp } from '@/components/xmtp/XmtpProvider';
 import { useWallet } from '@/hooks/use-wallet';
 import { cn, shortenAddress } from '@/lib/utils';
+import { circlesGetTransferData, getCirclesMaxFlow } from '@/lib/circles/rpc';
+import { encodeMessageId, callCrcTransfer, type CrcTransferPayload } from '@/lib/xmtp/crcTransfer';
 import {
   fetchDmMessages,
   getDm,
   sendDmGif,
-  sendDmPhoto,
   sendDmText,
   type DmMessage,
 } from '@/lib/xmtp/dms';
@@ -42,9 +42,11 @@ export function DmView({ conversationId }: { conversationId: string }) {
 
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
-  const cameraInputRef = useRef<HTMLInputElement>(null);
-  const galleryInputRef = useRef<HTMLInputElement>(null);
+  const [crcOpen, setCrcOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Map of messageId → txHash for CRC transfers sent this session.
+  const [crcTxHashes, setCrcTxHashes] = useState<Map<string, string>>(new Map());
 
   useEffect(() => {
     if (!client) return;
@@ -55,7 +57,7 @@ export function DmView({ conversationId }: { conversationId: string }) {
       try {
         const d = await getDm(client, conversationId);
         if (!d) {
-          if (!cancelled) setError('DM not found in your XMTP inbox.');
+          if (!cancelled) setError('Conversation not found in your XMTP inbox.');
           return;
         }
         const { peer: p, messages: m } = await fetchDmMessages(d, client);
@@ -74,7 +76,6 @@ export function DmView({ conversationId }: { conversationId: string }) {
     };
   }, [client, conversationId, tick]);
 
-  // Auto-scroll to bottom on new messages.
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages]);
@@ -105,15 +106,20 @@ export function DmView({ conversationId }: { conversationId: string }) {
     }
   };
 
-  const handleFiles = async (files: FileList | null) => {
-    if (!dm || !files || files.length === 0) return;
+  const handleCrcSend = async (amountCRC: string, note: string) => {
+    if (!dm || !address || !peer) return;
     setSending(true);
     try {
-      // Send each photo as its own RemoteAttachment message.
-      for (const file of Array.from(files)) {
-        if (!file.type.startsWith('image/')) continue;
-        await sendDmPhoto(dm, file);
-      }
+      const { hash, messageId } = await callCrcTransfer({
+        source: address,
+        sink: peer,
+        amountCRC,
+        note,
+        peerDisplay: shortenAddress(peer),
+        conversation: dm as unknown as Parameters<typeof callCrcTransfer>[0]['conversation'],
+      });
+      setCrcTxHashes((prev) => new Map(prev).set(messageId, hash));
+      setCrcOpen(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -133,9 +139,7 @@ export function DmView({ conversationId }: { conversationId: string }) {
     <div className="flex h-[calc(100vh-12rem)] flex-col gap-3">
       <Card className="flex items-center gap-3 px-3 py-2">
         <div className="flex flex-col leading-tight">
-          <span className="text-xs uppercase tracking-wide text-muted-foreground">
-            DM
-          </span>
+          <span className="text-xs uppercase tracking-wide text-muted-foreground">DM</span>
           <span className="font-mono text-sm font-semibold" title={peer}>
             {peer ? shortenAddress(peer) : '…'}
           </span>
@@ -154,18 +158,32 @@ export function DmView({ conversationId }: { conversationId: string }) {
           </div>
         )}
         {!loading && error && (
-          <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            {error}
-          </p>
+          <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</p>
         )}
         {!loading && !error && messages.length === 0 && (
-          <p className="m-auto text-sm text-muted-foreground">
-            No messages yet. Say hi.
-          </p>
+          <p className="m-auto text-sm text-muted-foreground">No messages yet. Say hi.</p>
         )}
         {!loading &&
-          messages.map((m) => <MessageBubble key={m.id} message={m} myAddress={address ?? ''} />)}
+          messages.map((m) => (
+            <MessageBubble
+              key={m.id}
+              message={m}
+              myAddress={address ?? ''}
+              overrideTxHash={m.kind === 'crc-transfer' ? crcTxHashes.get(m.messageId) : undefined}
+              connectedAddress={address ?? ''}
+            />
+          ))}
       </div>
+
+      {crcOpen && (
+        <CrcTransferSheet
+          myAddress={address ?? ''}
+          peerAddress={peer}
+          onSend={handleCrcSend}
+          onClose={() => setCrcOpen(false)}
+          sending={sending}
+        />
+      )}
 
       <Card className="flex items-center gap-2 px-2 py-2">
         <GifDrawer
@@ -182,19 +200,16 @@ export function DmView({ conversationId }: { conversationId: string }) {
         />
         <button
           type="button"
-          aria-label="Send photo"
-          onClick={() => galleryInputRef.current?.click()}
-          className="grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent"
+          aria-label="Send CRC"
+          onClick={() => setCrcOpen((o) => !o)}
+          className={cn(
+            'grid size-9 shrink-0 place-items-center rounded-md transition-colors',
+            crcOpen
+              ? 'bg-accent text-foreground'
+              : 'text-muted-foreground hover:bg-accent',
+          )}
         >
-          <IconPhoto className="size-5" />
-        </button>
-        <button
-          type="button"
-          aria-label="Take photo"
-          onClick={() => cameraInputRef.current?.click()}
-          className="grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent"
-        >
-          <IconCamera className="size-5" />
+          <IconCoins className="size-5" />
         </button>
         <Input
           value={text}
@@ -216,42 +231,131 @@ export function DmView({ conversationId }: { conversationId: string }) {
           disabled={sending || !text.trim()}
           className="h-9"
         >
-          {sending ? <IconLoader2 className="size-4 animate-spin" /> : <IconSend className="size-4" />}
+          {sending ? (
+            <IconLoader2 className="size-4 animate-spin" />
+          ) : (
+            <IconSend className="size-4" />
+          )}
         </Button>
       </Card>
-
-      <input
-        ref={galleryInputRef}
-        type="file"
-        accept="image/*"
-        multiple
-        hidden
-        onChange={(e) => {
-          handleFiles(e.target.files);
-          e.target.value = '';
-        }}
-      />
-      <input
-        ref={cameraInputRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        hidden
-        onChange={(e) => {
-          handleFiles(e.target.files);
-          e.target.value = '';
-        }}
-      />
     </div>
   );
 }
 
+// ── CRC Transfer Sheet ────────────────────────────────────────────────────────
+
+function CrcTransferSheet({
+  myAddress,
+  peerAddress,
+  onSend,
+  onClose,
+  sending,
+}: {
+  myAddress: string;
+  peerAddress: string;
+  onSend: (amount: string, note: string) => Promise<void>;
+  onClose: () => void;
+  sending: boolean;
+}) {
+  const [amount, setAmount] = useState('');
+  const [note, setNote] = useState('');
+  const [maxFlow, setMaxFlow] = useState<string | null>(null);
+  const [loadingMax, setLoadingMax] = useState(false);
+
+  useEffect(() => {
+    if (!myAddress || !peerAddress) return;
+    let cancelled = false;
+    (async () => {
+      setLoadingMax(true);
+      try {
+        const flow = await getCirclesMaxFlow(myAddress, peerAddress);
+        if (!cancelled) setMaxFlow(flow);
+      } catch {
+        if (!cancelled) setMaxFlow(null);
+      } finally {
+        if (!cancelled) setLoadingMax(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [myAddress, peerAddress]);
+
+  const amountNum = Number(amount);
+  const maxNum = maxFlow ? Number(maxFlow) : undefined;
+  const overMax = maxNum !== undefined && amountNum > maxNum;
+  const canSend = amount && amountNum > 0 && !overMax && !sending;
+
+  return (
+    <Card className="flex flex-col gap-3 px-4 py-4">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-semibold">Send CRC</span>
+        <button
+          type="button"
+          onClick={onClose}
+          className="grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-accent"
+        >
+          <IconX className="size-4" />
+        </button>
+      </div>
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center gap-2">
+          <Input
+            type="number"
+            min="0"
+            step="any"
+            placeholder="Amount (CRC)"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            className="h-9 flex-1"
+          />
+          {maxFlow && (
+            <button
+              type="button"
+              className="shrink-0 rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
+              onClick={() => setAmount(maxFlow)}
+            >
+              Max
+            </button>
+          )}
+        </div>
+        {loadingMax && (
+          <p className="text-[10px] text-muted-foreground">Checking max flow…</p>
+        )}
+        {maxFlow && (
+          <p className={cn('text-[10px]', overMax ? 'text-destructive' : 'text-muted-foreground')}>
+            Max {maxFlow} CRC{overMax ? ' — exceeds available flow' : ''}
+          </p>
+        )}
+      </div>
+      <Input
+        placeholder="Note (optional)"
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        className="h-9"
+      />
+      <Button
+        type="button"
+        onClick={() => onSend(amount, note)}
+        disabled={!canSend}
+        className="self-end"
+      >
+        {sending ? <IconLoader2 className="size-4 animate-spin" /> : 'Send CRC'}
+      </Button>
+    </Card>
+  );
+}
+
+// ── Message Bubbles ───────────────────────────────────────────────────────────
+
 function MessageBubble({
   message,
   myAddress,
+  overrideTxHash,
+  connectedAddress,
 }: {
   message: DmMessage;
   myAddress: string;
+  overrideTxHash?: string;
+  connectedAddress: string;
 }) {
   const mine = message.mine;
   const align = mine ? 'self-end' : 'self-start';
@@ -275,15 +379,22 @@ function MessageBubble({
       return (
         <div className={cn('flex flex-col gap-0.5', align)}>
           <div className="relative size-40 overflow-hidden rounded-2xl border bg-muted">
-            <Image
-              src={message.url}
-              alt=""
-              fill
-              sizes="160px"
-              className="object-cover"
-              unoptimized
-            />
+            <Image src={message.url} alt="" fill sizes="160px" className="object-cover" unoptimized />
           </div>
+          <Timestamp ts={message.ts} mine={mine} />
+        </div>
+      );
+
+    case 'crc-transfer':
+      return (
+        <div className={cn('flex flex-col gap-0.5', align)}>
+          <CrcTransferBubble
+            payload={message.payload}
+            messageId={message.messageId}
+            mine={mine}
+            overrideTxHash={overrideTxHash}
+            connectedAddress={connectedAddress}
+          />
           <Timestamp ts={message.ts} mine={mine} />
         </div>
       );
@@ -296,31 +407,11 @@ function MessageBubble({
         </div>
       );
 
-    case 'attachment':
-      return (
-        <div className={cn('flex flex-col gap-0.5', align)}>
-          <InlineAttachment
-            data={message.data}
-            mimeType={message.mimeType}
-            filename={message.filename}
-          />
-          <Timestamp ts={message.ts} mine={mine} />
-        </div>
-      );
-
-    case 'remote-attachment':
-      return (
-        <div className={cn('flex flex-col gap-0.5', align)}>
-          <RemoteAttachmentBubble message={message} />
-          <Timestamp ts={message.ts} mine={mine} />
-        </div>
-      );
-
     default:
       return (
         <div className={cn('flex flex-col gap-0.5', align)}>
           <p className={cn(bubble, 'italic text-muted-foreground')}>
-            {message.fallback || 'Unsupported message'}
+            {(message as { fallback?: string }).fallback || 'Unsupported message'}
           </p>
           <Timestamp ts={message.ts} mine={mine} />
         </div>
@@ -328,18 +419,96 @@ function MessageBubble({
   }
 }
 
+function CrcTransferBubble({
+  payload,
+  messageId,
+  mine,
+  overrideTxHash,
+  connectedAddress,
+}: {
+  payload: CrcTransferPayload;
+  messageId: string;
+  mine: boolean;
+  overrideTxHash?: string;
+  connectedAddress: string;
+}) {
+  const [txHash, setTxHash] = useState<string | null>(null);
+  const resolvedHash = overrideTxHash ?? txHash;
+
+  // Poll for tx hash on received messages (or after page reload for sent ones).
+  useEffect(() => {
+    if (resolvedHash) return;
+    if (!connectedAddress) return;
+
+    let encoded: string;
+    try {
+      encoded = encodeMessageId(messageId);
+    } catch {
+      return;
+    }
+
+    let cancelled = false;
+    let attempts = 0;
+    const MAX = 24;
+    const INTERVAL = 5000;
+
+    const poll = async () => {
+      while (!cancelled && attempts < MAX) {
+        attempts++;
+        try {
+          const transfers = await circlesGetTransferData(connectedAddress);
+          const match = transfers.find((t) => t.data === encoded);
+          if (match && !cancelled) {
+            setTxHash(match.transactionHash);
+            return;
+          }
+        } catch {}
+        await new Promise((r) => setTimeout(r, INTERVAL));
+      }
+    };
+
+    poll();
+    return () => {
+      cancelled = true;
+    };
+  }, [messageId, connectedAddress, resolvedHash]);
+
+  return (
+    <Card className="flex w-64 flex-col gap-2 px-3 py-3">
+      <div className="flex items-center gap-2">
+        <span className="grid size-7 place-items-center rounded-full bg-emerald-500/10">
+          <IconCoins className="size-4 text-emerald-600" />
+        </span>
+        <div className="flex flex-col leading-tight">
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {mine ? 'Sent CRC' : 'Received CRC'}
+          </span>
+          <span className="font-mono text-base font-semibold text-emerald-600">
+            {payload.value} CRC
+          </span>
+        </div>
+      </div>
+      {payload.note && <p className="text-xs text-muted-foreground">{payload.note}</p>}
+      {resolvedHash ? (
+        <a
+          href={`https://gnosisscan.io/tx/${resolvedHash}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs text-primary underline-offset-2 hover:underline"
+        >
+          View transaction ↗
+        </a>
+      ) : (
+        <span className="text-xs text-muted-foreground">Looking up transaction…</span>
+      )}
+    </Card>
+  );
+}
+
 function Timestamp({ ts, mine }: { ts: number; mine: boolean }) {
   return (
-    <span
-      className={cn(
-        'px-1 text-[10px] text-muted-foreground',
-        mine ? 'self-end' : 'self-start',
-      )}
-    >
-      {new Date(ts * 1000).toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit',
-      })}
+    <span className={cn('px-1 text-[10px] text-muted-foreground', mine ? 'self-end' : 'self-start')}>
+      {new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
     </span>
   );
 }
@@ -355,9 +524,7 @@ function PaymentRequestCard({
   const me = myAddress.toLowerCase();
   const incoming = p.requester.toLowerCase() !== me;
   const Icon = incoming ? IconArrowUpRight : IconArrowDownLeft;
-  const color = incoming
-    ? 'text-rose-600 dark:text-rose-400'
-    : 'text-emerald-600 dark:text-emerald-400';
+  const color = incoming ? 'text-rose-600' : 'text-emerald-600';
 
   return (
     <Card className="flex w-72 flex-col gap-2 px-3 py-3">
@@ -380,172 +547,6 @@ function PaymentRequestCard({
         </div>
       </div>
       {p.message && <p className="text-xs text-muted-foreground">{p.message}</p>}
-      {p.attachments?.[0] && (
-        <div className="relative size-20 overflow-hidden rounded-md border bg-muted">
-          <Image
-            src={p.attachments[0]}
-            alt=""
-            fill
-            sizes="80px"
-            className="object-cover"
-            unoptimized
-          />
-        </div>
-      )}
-      {p.remoteAttachments?.[0] && (
-        <RemoteThumb meta={p.remoteAttachments[0]} />
-      )}
     </Card>
-  );
-}
-
-function InlineAttachment({
-  data,
-  mimeType,
-  filename,
-}: {
-  data: Uint8Array;
-  mimeType: string;
-  filename: string;
-}) {
-  // Build the object URL synchronously from props (no effect required) and
-  // revoke on unmount via a final-value ref. Skips the cascading-render
-  // setState-in-effect pattern.
-  const [url] = useState(() =>
-    URL.createObjectURL(new Blob([data as BlobPart], { type: mimeType })),
-  );
-  useEffect(() => () => URL.revokeObjectURL(url), [url]);
-  if (mimeType.startsWith('image/')) {
-    return (
-      <div className="relative size-40 overflow-hidden rounded-2xl border bg-muted">
-        <Image src={url} alt={filename} fill sizes="160px" className="object-cover" unoptimized />
-      </div>
-    );
-  }
-  return (
-    <a
-      href={url}
-      download={filename}
-      className="rounded-2xl border bg-card px-3 py-2 text-xs text-muted-foreground hover:bg-accent"
-    >
-      📎 {filename}
-    </a>
-  );
-}
-
-function RemoteAttachmentBubble({
-  message,
-}: {
-  message: Extract<DmMessage, { kind: 'remote-attachment' }>;
-}) {
-  const { client } = useXmtp();
-  const [state, setState] = useState<
-    { kind: 'loading' } | { kind: 'ready'; url: string; mimeType: string } | { kind: 'error' }
-  >({ kind: 'loading' });
-
-  useEffect(() => {
-    if (!client) return;
-    let cancelled = false;
-    let createdUrl: string | null = null;
-    (async () => {
-      try {
-        const { loadRemoteAttachmentRaw } = await import('@/lib/xmtp/attachments');
-        const { url, mimeType } = await loadRemoteAttachmentRaw(message.remote);
-        if (cancelled) {
-          URL.revokeObjectURL(url);
-          return;
-        }
-        createdUrl = url;
-        setState({ kind: 'ready', url, mimeType });
-      } catch {
-        if (!cancelled) setState({ kind: 'error' });
-      }
-    })();
-    return () => {
-      cancelled = true;
-      if (createdUrl) URL.revokeObjectURL(createdUrl);
-    };
-  }, [client, message.remote]);
-
-  if (state.kind === 'loading') {
-    return (
-      <div className="grid size-40 place-items-center rounded-2xl border bg-muted">
-        <IconLoader2 className="size-5 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-  if (state.kind === 'error') {
-    return (
-      <div className="grid size-40 place-items-center rounded-2xl border bg-muted text-xs text-destructive">
-        <span className="flex flex-col items-center gap-1">
-          <IconX className="size-4" />
-          Failed to load
-        </span>
-      </div>
-    );
-  }
-  if (state.mimeType.startsWith('image/')) {
-    return (
-      <div className="relative size-40 overflow-hidden rounded-2xl border bg-muted">
-        <Image
-          src={state.url}
-          alt={message.remote.filename}
-          fill
-          sizes="160px"
-          className="object-cover"
-          unoptimized
-        />
-      </div>
-    );
-  }
-  return (
-    <a
-      href={state.url}
-      download={message.remote.filename}
-      className="rounded-2xl border bg-card px-3 py-2 text-xs text-muted-foreground hover:bg-accent"
-    >
-      📎 {message.remote.filename}
-    </a>
-  );
-}
-
-function RemoteThumb({
-  meta,
-}: {
-  meta: NonNullable<
-    Extract<DmMessage, { kind: 'payment-request' }>['payload']['remoteAttachments']
-  >[number];
-}) {
-  const { client } = useXmtp();
-  const [url, setUrl] = useState<string | null>(null);
-  useEffect(() => {
-    if (!client) return;
-    let cancelled = false;
-    let createdUrl: string | null = null;
-    (async () => {
-      try {
-        const { loadRemoteAttachment } = await import('@/lib/xmtp/attachments');
-        const decoded = await loadRemoteAttachment(client, meta);
-        if (cancelled) {
-          URL.revokeObjectURL(decoded.url);
-          return;
-        }
-        createdUrl = decoded.url;
-        setUrl(decoded.url);
-      } catch {
-        // Silent — preview card just won't show the photo.
-      }
-    })();
-    return () => {
-      cancelled = true;
-      if (createdUrl) URL.revokeObjectURL(createdUrl);
-    };
-  }, [client, meta]);
-
-  if (!url) return null;
-  return (
-    <div className="relative size-20 overflow-hidden rounded-md border bg-muted">
-      <Image src={url} alt={meta.filename} fill sizes="80px" className="object-cover" unoptimized />
-    </div>
   );
 }

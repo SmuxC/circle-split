@@ -1,6 +1,5 @@
 import type { Client, Dm } from '@xmtp/browser-sdk';
 
-import { encryptAndUploadFile } from './attachments';
 import {
   APP_ID,
   ContentTypePaymentRequest,
@@ -8,29 +7,21 @@ import {
   isValidPaymentRequest,
   paymentRequestCodec,
   type PaymentRequest,
-  type SerialisedRemoteAttachment,
 } from './codecs';
 
 export type PaymentRequestRecord = {
   conversationId: string;
   requestId: string;
-  requester: string; // sender address (always lowercase)
+  requester: string;
   payer: string;
   amount: string;
   symbol: string;
   message?: string;
-  attachments?: string[];
-  remoteAttachments?: SerialisedRemoteAttachment[];
   mode: 'request' | 'split';
-  ts: number; // seconds
-  // 'incoming' = someone asked me; 'outgoing' = I asked someone.
+  ts: number;
   direction: 'incoming' | 'outgoing';
 };
 
-/**
- * Opens (or reuses) a 1:1 DM with the recipient and sends an encrypted
- * payment-request payload. Returns the DM id so callers can navigate.
- */
 export async function sendPaymentRequest(
   client: Client,
   args: {
@@ -39,8 +30,6 @@ export async function sendPaymentRequest(
     amount: string;
     symbol: string;
     message?: string;
-    attachments?: string[];
-    files?: File[];
     mode: 'request' | 'split';
   },
 ): Promise<{ conversationId: string; payload: PaymentRequest }> {
@@ -48,13 +37,6 @@ export async function sendPaymentRequest(
     identifier: args.recipient.toLowerCase(),
     identifierKind: 0 as never,
   });
-
-  // Encrypt + upload each file in parallel before composing the payload.
-  // If any upload fails the whole send aborts — partial attachments would
-  // be worse than no send (recipient sees broken thumbnails).
-  const remoteAttachments = args.files?.length
-    ? await Promise.all(args.files.map((f) => encryptAndUploadFile(f)))
-    : undefined;
 
   const payload: PaymentRequest = {
     kind: 'payment-request',
@@ -65,35 +47,23 @@ export async function sendPaymentRequest(
     amount: args.amount,
     symbol: args.symbol,
     message: args.message,
-    attachments: args.attachments?.length ? args.attachments : undefined,
-    remoteAttachments,
     mode: args.mode,
     ts: Math.floor(Date.now() / 1000),
   };
 
   await dm.send(paymentRequestCodec.encode(payload));
-  // Author-side auto-allow: surface own DMs in lists that exclude pending consent.
   try {
-    await dm.updateConsentState(1 as never); // ConsentState.Allowed
-  } catch {
-    // Non-fatal — list filters tolerate Unknown state too.
-  }
+    await dm.updateConsentState(1 as never);
+  } catch {}
 
   return { conversationId: dm.id, payload };
 }
 
-/**
- * Scans all DMs for payment-request payloads. Returns both incoming
- * (someone asked me) and outgoing (I asked someone) records, deduplicated
- * by requestId, newest first.
- */
 export async function listPaymentRequests(
   client: Client,
   myAddress: string,
 ): Promise<PaymentRequestRecord[]> {
   await client.conversations.sync();
-  // ConsentState: 0=Unknown, 1=Allowed. Include both so unaccepted invites
-  // (first-time inbound requests from strangers) still surface.
   const dms = (await client.conversations.listDms({
     consentStates: [0, 1] as never,
   })) as Dm[];
@@ -128,16 +98,12 @@ export async function listPaymentRequests(
           amount: payload.amount,
           symbol: payload.symbol,
           message: payload.message,
-          attachments: payload.attachments,
-          remoteAttachments: payload.remoteAttachments,
           mode: payload.mode,
           ts: payload.ts,
           direction,
         });
       }
-    } catch {
-      // Skip unreadable DM; don't drop the whole list.
-    }
+    } catch {}
   }
 
   out.sort((a, b) => b.ts - a.ts);

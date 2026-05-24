@@ -1,14 +1,6 @@
 import type { Client, Dm, DecodedMessage } from '@xmtp/browser-sdk';
-import {
-  ContentTypeAttachment,
-  ContentTypeRemoteAttachment,
-  RemoteAttachmentCodec,
-  type Attachment,
-  type RemoteAttachment,
-} from '@xmtp/content-type-remote-attachment';
-import type { ContentTypeId } from '@xmtp/content-type-primitives';
 
-import { encryptAndUploadFileRaw } from './attachments';
+import { CRC_PREFIX, isCrcTransfer, parseCrcTransfer, type CrcTransferPayload } from './crcTransfer';
 import {
   isPaymentRequestContent,
   isValidPaymentRequest,
@@ -25,6 +17,8 @@ export type DmSummary = {
   consentState: number;
   lastTs: number;
   lastPreview: string;
+  isDm: boolean;
+  name?: string;
 };
 
 type Base = {
@@ -36,29 +30,13 @@ type Base = {
 
 export type DmMessage =
   | (Base & { kind: 'text'; text: string })
-  | (Base & { kind: 'gif'; url: string; text?: string })
+  | (Base & { kind: 'gif'; url: string })
+  | (Base & { kind: 'crc-transfer'; payload: CrcTransferPayload; messageId: string })
   | (Base & { kind: 'payment-request'; payload: PaymentRequest })
-  | (Base & {
-      kind: 'attachment';
-      filename: string;
-      mimeType: string;
-      data: Uint8Array;
-    })
-  | (Base & { kind: 'remote-attachment'; remote: RemoteAttachment })
   | (Base & { kind: 'unknown'; fallback?: string });
 
-// Recognises gif/image URLs the user pasted/sent so the chat can render them
-// inline rather than as a raw link.
 const IMAGE_URL_RE = /^https?:\/\/\S+\.(?:gif|webp|png|jpe?g)(?:\?\S*)?$/i;
 
-function eq(a: ContentTypeId, b: ContentTypeId): boolean {
-  return a.authorityId === b.authorityId && a.typeId === b.typeId;
-}
-
-/**
- * Lists DMs for the current client, newest activity first. Includes both
- * Allowed and Unknown consent so first-time inbound messages still surface.
- */
 export async function listDms(client: Client): Promise<DmSummary[]> {
   await client.conversations.sync();
   const dms = (await client.conversations.listDms({
@@ -79,11 +57,79 @@ export async function listDms(client: Client): Promise<DmSummary[]> {
         consentState,
         lastTs: last.ts,
         lastPreview: last.preview,
+        isDm: true,
       });
     } catch {
-      // Skip unreadable DM rather than dropping the whole list.
+      // Skip unreadable DM.
     }
   }
+  out.sort((a, b) => b.lastTs - a.lastTs);
+  return out;
+}
+
+export async function listAllConversations(client: Client): Promise<DmSummary[]> {
+  await client.conversations.sync();
+
+  const [dms, groups] = await Promise.all([
+    client.conversations.listDms({
+      consentStates: [CONSENT_UNKNOWN, CONSENT_ALLOWED] as never,
+    }) as Promise<Dm[]>,
+    (client.conversations as unknown as {
+      listGroups: (opts: unknown) => Promise<unknown[]>;
+    }).listGroups({
+      consentStates: [CONSENT_UNKNOWN, CONSENT_ALLOWED] as never,
+    }),
+  ]);
+
+  const out: DmSummary[] = [];
+  const myInbox = await safeInboxId(client);
+
+  for (const dm of dms as Dm[]) {
+    try {
+      await dm.sync();
+      const consentState = (await dm.consentState()) as unknown as number;
+      const peer = await peerAddress(dm, client);
+      if (!peer) continue;
+      const last = await lastPreview(dm);
+      out.push({
+        conversationId: dm.id,
+        peer,
+        consentState,
+        lastTs: last.ts,
+        lastPreview: last.preview,
+        isDm: true,
+      });
+    } catch {}
+  }
+
+  for (const g of groups as Array<{
+    id: string;
+    name?: string;
+    sync: () => Promise<void>;
+    consentState: () => Promise<unknown>;
+    members: () => Promise<{ inboxId: string }[]>;
+    messages: (opts: { limit: bigint }) => Promise<DecodedMessage[]>;
+  }>) {
+    try {
+      await g.sync();
+      const consentState = (await g.consentState()) as unknown as number;
+      const members = await g.members();
+      const name = g.name ?? `Group (${members.length})`;
+      const last = await groupLastPreview(g);
+      // Use myInbox to determine peer (not used for display in groups, but needed for type)
+      void myInbox;
+      out.push({
+        conversationId: g.id,
+        peer: name,
+        consentState,
+        lastTs: last.ts,
+        lastPreview: last.preview,
+        isDm: false,
+        name,
+      });
+    } catch {}
+  }
+
   out.sort((a, b) => b.lastTs - a.lastTs);
   return out;
 }
@@ -117,29 +163,15 @@ export async function fetchDmMessages(
       continue;
     }
 
-    if (eq(m.contentType, ContentTypeRemoteAttachment)) {
-      messages.push({
-        ...base,
-        kind: 'remote-attachment',
-        remote: m.content as RemoteAttachment,
-      });
-      continue;
-    }
-
-    if (eq(m.contentType, ContentTypeAttachment)) {
-      const a = m.content as Attachment;
-      messages.push({
-        ...base,
-        kind: 'attachment',
-        filename: a.filename,
-        mimeType: a.mimeType,
-        data: a.data,
-      });
-      continue;
-    }
-
     if (typeof m.content === 'string') {
       const text = m.content;
+      if (isCrcTransfer(text)) {
+        const payload = parseCrcTransfer(text);
+        if (payload) {
+          messages.push({ ...base, kind: 'crc-transfer', payload, messageId: m.id });
+          continue;
+        }
+      }
       if (IMAGE_URL_RE.test(text.trim())) {
         messages.push({ ...base, kind: 'gif', url: text.trim() });
       } else {
@@ -166,26 +198,15 @@ export async function sendDmGif(dm: Dm, url: string): Promise<void> {
   await tryAllow(dm);
 }
 
-export async function sendDmPhoto(dm: Dm, file: File): Promise<void> {
-  const { remote } = await encryptAndUploadFileRaw(file);
-  const encoded = new RemoteAttachmentCodec().encode(remote);
-  await dm.send(encoded);
-  await tryAllow(dm);
-}
-
 async function tryAllow(dm: Dm): Promise<void> {
   try {
     await dm.updateConsentState(CONSENT_ALLOWED as never);
-  } catch {
-    // Non-fatal — list filters tolerate Unknown.
-  }
+  } catch {}
 }
 
 export async function getDm(client: Client, id: string): Promise<Dm | null> {
   const conv = await client.conversations.getConversationById(id);
   if (!conv) return null;
-  // DM and Group share Conversation base; rely on caller route only ever
-  // passing DM ids. Cast for the API surface.
   return conv as unknown as Dm;
 }
 
@@ -228,13 +249,16 @@ async function lastPreview(dm: Dm): Promise<{ ts: number; preview: string }> {
   if (isPaymentRequestContent(m.contentType)) {
     const p = m.content as PaymentRequest;
     preview = `${p.mode === 'split' ? 'Split' : 'Request'} ${p.amount} ${p.symbol}`;
-  } else if (eq(m.contentType, ContentTypeRemoteAttachment)) {
-    preview = '📎 Attachment';
-  } else if (eq(m.contentType, ContentTypeAttachment)) {
-    preview = '📎 Attachment';
   } else if (typeof m.content === 'string') {
     const text = m.content;
-    preview = IMAGE_URL_RE.test(text.trim()) ? '🖼 GIF' : text;
+    if (isCrcTransfer(text)) {
+      const p = parseCrcTransfer(text);
+      preview = p ? `CRC ${p.value}` : 'CRC transfer';
+    } else if (IMAGE_URL_RE.test(text.trim())) {
+      preview = 'GIF';
+    } else {
+      preview = text;
+    }
   } else if (m.fallback) {
     preview = m.fallback;
   } else {
@@ -242,3 +266,21 @@ async function lastPreview(dm: Dm): Promise<{ ts: number; preview: string }> {
   }
   return { ts, preview: preview.slice(0, 80) };
 }
+
+async function groupLastPreview(g: {
+  messages: (opts: { limit: bigint }) => Promise<DecodedMessage[]>;
+}): Promise<{ ts: number; preview: string }> {
+  const msgs = await g.messages({ limit: 5n });
+  if (msgs.length === 0) return { ts: 0, preview: '' };
+  const ordered = [...msgs].sort((a, b) => Number(b.sentAtNs - a.sentAtNs));
+  const m = ordered[0];
+  const ts = Number(m.sentAtNs / 1_000_000_000n);
+  const preview =
+    typeof m.content === 'string'
+      ? m.content.slice(0, 80)
+      : (m.fallback ?? '…');
+  return { ts, preview };
+}
+
+// Export CRC_PREFIX for backward compat
+export { CRC_PREFIX };

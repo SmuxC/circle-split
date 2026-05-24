@@ -4,9 +4,9 @@ import { IconArrowLeft } from '@tabler/icons-react';
 import Link from 'next/link';
 import { use } from 'react';
 
-import { TripView } from '@/components/trips/TripView';
+import { DmView } from '@/components/dms/DmView';
 
-export default function TripPage({ params }: { params: Promise<{ id: string }> }) {
+export default function GroupChatPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-4">
@@ -15,9 +15,9 @@ export default function TripPage({ params }: { params: Promise<{ id: string }> }
         className="inline-flex items-center gap-1 self-start text-sm text-muted-foreground hover:text-foreground"
       >
         <IconArrowLeft className="size-4" />
-        Trips
+        Messages
       </Link>
-      <TripView conversationId={id} />
+      <DmView conversationId={id} />
     </div>
   );
 }

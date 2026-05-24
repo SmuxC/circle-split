@@ -3,42 +3,9 @@ import {
   type ContentCodec,
   type EncodedContent,
 } from '@xmtp/content-type-primitives';
-import {
-  AttachmentCodec,
-  RemoteAttachmentCodec,
-} from '@xmtp/content-type-remote-attachment';
 
-// Authority namespaces this app's codecs. Pick something unique to you in
-// production; collisions across apps would let an unrelated XMTP message
-// surface in this miniapp's trip list.
 const AUTHORITY = 'embedded-miniapp-boilerplate';
 export const APP_ID = `${AUTHORITY}@1.0`;
-
-// Sentinel embedded in group name. Combined with codec validation, lets us
-// cheaply pre-filter `conversations.list()` before opening each group's
-// messages to verify the trip-init payload.
-export const TRIP_NAME_PREFIX = 'vsplit:';
-
-export const ContentTypeTripInit: ContentTypeId = {
-  authorityId: AUTHORITY,
-  typeId: 'trip-init',
-  versionMajor: 1,
-  versionMinor: 0,
-};
-
-export const ContentTypeExpense: ContentTypeId = {
-  authorityId: AUTHORITY,
-  typeId: 'expense',
-  versionMajor: 1,
-  versionMinor: 0,
-};
-
-export const ContentTypeMemberAdded: ContentTypeId = {
-  authorityId: AUTHORITY,
-  typeId: 'member-added',
-  versionMajor: 1,
-  versionMinor: 0,
-};
 
 export const ContentTypePaymentRequest: ContentTypeId = {
   authorityId: AUTHORITY,
@@ -47,88 +14,21 @@ export const ContentTypePaymentRequest: ContentTypeId = {
   versionMinor: 0,
 };
 
-export interface TripInit {
-  kind: 'trip-init';
-  appId: string;
-  tripId: string;
-  creator: string;
-  members: string[];
-  name: string;
-  currency: string;
-  ts: number;
-}
-
-export interface Expense {
-  kind: 'expense';
-  tripId: string;
-  payer: string;
-  amount: string;
-  currency: string;
-  label: string;
-  ts: number;
-}
-
-export interface MemberAdded {
-  kind: 'member-added';
-  tripId: string;
-  member: string;
-  ts: number;
-}
-
-export interface SerialisedRemoteAttachment {
-  url: string;
-  contentDigest: string;
-  // base64-encoded byte fields.
-  salt: string;
-  nonce: string;
-  secret: string;
-  scheme: string;
-  contentLength: number;
-  filename: string;
-  mimeType: string;
-}
-
 export interface PaymentRequest {
   kind: 'payment-request';
   appId: string;
   requestId: string;
-  // Address of the wallet asking to be paid.
   requester: string;
-  // Address expected to pay (DM recipient — denormalised for indexing).
   payer: string;
-  // Decimal string, e.g. "12.50". Not atto-units.
   amount: string;
-  // Token symbol shown to user (e.g. "EUR", "USDC").
   symbol: string;
-  // Optional free-text note.
   message?: string;
-  // Public, plaintext attachment URLs (e.g. local /gifs/* picks). Anyone
-  // with the URL can fetch them — only safe for non-sensitive assets.
-  attachments?: string[];
-  // E2E-encrypted photo attachments. Each ciphertext is hosted on a
-  // public blob store; only holders of the per-attachment `secret` (which
-  // travels inside this encrypted XMTP payload) can decrypt. Byte fields
-  // are base64 because JSON can't carry raw Uint8Arrays.
-  remoteAttachments?: SerialisedRemoteAttachment[];
-  // 'request' or 'split' — for now both encoded the same way.
   mode: 'request' | 'split';
   ts: number;
 }
 
 function eq(a: ContentTypeId, b: ContentTypeId): boolean {
   return a.authorityId === b.authorityId && a.typeId === b.typeId;
-}
-
-export function isTripInitContent(t: ContentTypeId | undefined): boolean {
-  return !!t && eq(t, ContentTypeTripInit);
-}
-
-export function isExpenseContent(t: ContentTypeId | undefined): boolean {
-  return !!t && eq(t, ContentTypeExpense);
-}
-
-export function isMemberAddedContent(t: ContentTypeId | undefined): boolean {
-  return !!t && eq(t, ContentTypeMemberAdded);
 }
 
 export function isPaymentRequestContent(t: ContentTypeId | undefined): boolean {
@@ -156,28 +56,11 @@ function jsonCodec<T>(contentType: ContentTypeId): ContentCodec<T> {
   };
 }
 
-export const tripInitCodec: ContentCodec<TripInit> = jsonCodec<TripInit>(ContentTypeTripInit);
-export const expenseCodec: ContentCodec<Expense> = jsonCodec<Expense>(ContentTypeExpense);
-export const memberAddedCodec: ContentCodec<MemberAdded> = jsonCodec<MemberAdded>(
-  ContentTypeMemberAdded,
-);
 export const paymentRequestCodec: ContentCodec<PaymentRequest> =
   jsonCodec<PaymentRequest>(ContentTypePaymentRequest);
 
-export const ALL_CODECS = [
-  tripInitCodec,
-  expenseCodec,
-  memberAddedCodec,
-  paymentRequestCodec,
-  new AttachmentCodec(),
-  new RemoteAttachmentCodec(),
-];
+export const ALL_CODECS = [paymentRequestCodec];
 
-/**
- * Validates a payment-request payload. Requester must equal the DM sender;
- * the payer claim is informational (we trust the DM channel itself to be
- * 1:1 with the intended payer, but check for outright tampering).
- */
 export function isValidPaymentRequest(
   payload: PaymentRequest,
   senderAddress: string,
@@ -189,44 +72,5 @@ export function isValidPaymentRequest(
     return false;
   if (!payload.symbol) return false;
   if (payload.mode !== 'request' && payload.mode !== 'split') return false;
-  return true;
-}
-
-/**
- * Validates a trip-init payload against the XMTP message sender + group
- * membership. Returns true only if the message can be trusted as the trip's
- * canonical initialization message.
- */
-export function isValidTripInit(
-  payload: TripInit,
-  senderAddress: string,
-  groupMemberAddresses: string[],
-): boolean {
-  if (payload.kind !== 'trip-init') return false;
-  if (payload.appId !== APP_ID) return false;
-  if (payload.creator.toLowerCase() !== senderAddress.toLowerCase()) return false;
-  const memberSet = new Set(payload.members.map((m) => m.toLowerCase()));
-  if (!memberSet.has(payload.creator.toLowerCase())) return false;
-  // Every claimed member must currently be in the XMTP group.
-  const groupSet = new Set(groupMemberAddresses.map((m) => m.toLowerCase()));
-  for (const m of memberSet) {
-    if (!groupSet.has(m)) return false;
-  }
-  return true;
-}
-
-/**
- * Validates an expense payload against sender + trip context.
- */
-export function isValidExpense(
-  payload: Expense,
-  senderAddress: string,
-  tripId: string,
-): boolean {
-  if (payload.kind !== 'expense') return false;
-  if (payload.tripId !== tripId) return false;
-  if (payload.payer.toLowerCase() !== senderAddress.toLowerCase()) return false;
-  if (!payload.amount || isNaN(Number(payload.amount)) || Number(payload.amount) <= 0)
-    return false;
   return true;
 }
