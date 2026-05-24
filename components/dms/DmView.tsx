@@ -7,12 +7,14 @@ import {
   IconCoins,
   IconGif,
   IconLoader2,
+  IconReceiptOff,
   IconSend,
+  IconUsersGroup,
   IconX,
 } from '@tabler/icons-react';
 import type { Dm } from '@xmtp/browser-sdk';
 import Image from 'next/image';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -23,6 +25,7 @@ import { useXmtp } from '@/components/xmtp/XmtpProvider';
 import { useWallet } from '@/hooks/use-wallet';
 import { cn, shortenAddress } from '@/lib/utils';
 import { circlesGetTransferData, getCirclesMaxFlow } from '@/lib/circles/rpc';
+import { computeDebts, sendBillSplitPayment, type DebtEntry } from '@/lib/xmtp/bills';
 import { encodeMessageId, callCrcTransfer, type CrcTransferPayload } from '@/lib/xmtp/crcTransfer';
 import {
   fetchDmMessages,
@@ -32,6 +35,7 @@ import {
   type DmMessage,
 } from '@/lib/xmtp/dms';
 import { sendPaymentConfirmation } from '@/lib/xmtp/requests';
+import type { BillSplit, BillSplitPayment } from '@/lib/xmtp/codecs';
 
 export function DmView({ conversationId }: { conversationId: string }) {
   const { client, status, tick, storageWarning } = useXmtp();
@@ -57,6 +61,15 @@ export function DmView({ conversationId }: { conversationId: string }) {
     amount: string;
     note?: string;
   } | null>(null);
+
+  // Non-null when paying a bill split debt.
+  const [debtPay, setDebtPay] = useState<DebtEntry | null>(null);
+
+  // Compute debts from all messages (only relevant for groups).
+  const debts = useMemo(
+    () => (groupName && address ? computeDebts(messages, address) : []),
+    [messages, groupName, address],
+  );
 
   useEffect(() => {
     if (!client) return;
@@ -171,6 +184,32 @@ export function DmView({ conversationId }: { conversationId: string }) {
     }
   };
 
+  const handleDebtPay = async (debt: DebtEntry, amountCRC: string, note: string) => {
+    if (!dm || !address) return;
+    setSending(true);
+    try {
+      const { hash, messageId } = await callCrcTransfer({
+        source: address,
+        sink: debt.counterparty,
+        amountCRC,
+        note,
+        peerDisplay: shortenAddress(debt.counterparty),
+        conversation: dm as unknown as Parameters<typeof callCrcTransfer>[0]['conversation'],
+      });
+      setCrcTxHashes((prev) => new Map(prev).set(messageId, hash));
+      await sendBillSplitPayment(dm as unknown as { send: (c: unknown) => Promise<unknown> }, {
+        billId: debt.billId,
+        payerAddress: address,
+        txHash: hash,
+      });
+      setDebtPay(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSending(false);
+    }
+  };
+
   if (status !== 'ready') {
     return (
       <Card className="flex flex-col items-center gap-2 px-6 py-10 text-center">
@@ -196,6 +235,10 @@ export function DmView({ conversationId }: { conversationId: string }) {
         <p className="rounded-md bg-amber-500/10 px-3 py-2 text-center text-xs text-amber-700">
           {storageWarning}
         </p>
+      )}
+
+      {groupName && debts.length > 0 && (
+        <DebtOverview debts={debts} onPay={setDebtPay} />
       )}
 
       <div
@@ -247,6 +290,18 @@ export function DmView({ conversationId }: { conversationId: string }) {
           initialAmount={payReq.amount}
           initialNote={payReq.note}
           title="Pay Request"
+        />
+      )}
+      {debtPay && (
+        <CrcTransferSheet
+          myAddress={address ?? ''}
+          peerAddress={debtPay.counterparty}
+          onSend={(amt, note) => handleDebtPay(debtPay, amt, note)}
+          onClose={() => setDebtPay(null)}
+          sending={sending}
+          initialAmount={debtPay.amount.toString()}
+          initialNote={`Bill: ${debtPay.description}`}
+          title={`Pay ${shortenAddress(debtPay.counterparty)}`}
         />
       )}
 
@@ -488,6 +543,22 @@ function MessageBubble({
         </div>
       );
 
+    case 'bill-split':
+      return (
+        <div className={cn('flex flex-col gap-0.5', align)}>
+          <BillSplitBubble payload={message.payload} mine={mine} />
+          <Timestamp ts={message.ts} mine={mine} />
+        </div>
+      );
+
+    case 'bill-split-payment':
+      return (
+        <div className={cn('flex flex-col gap-0.5', align)}>
+          <BillSplitPaymentBubble payload={message.payload} mine={mine} />
+          <Timestamp ts={message.ts} mine={mine} />
+        </div>
+      );
+
     default:
       return (
         <div className={cn('flex flex-col gap-0.5', align)}>
@@ -669,6 +740,168 @@ function PaymentRequestCard({
           Pay {p.amount} {p.symbol}
         </Button>
       ) : null}
+    </Card>
+  );
+}
+
+function BillSplitBubble({ payload, mine }: { payload: BillSplit; mine: boolean }) {
+  return (
+    <Card className="flex w-72 flex-col gap-2 px-3 py-3">
+      <div className="flex items-center gap-2">
+        <span className="grid size-7 place-items-center rounded-full bg-violet-500/10">
+          <IconUsersGroup className="size-4 text-violet-600" />
+        </span>
+        <div className="flex flex-col leading-tight">
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {mine ? 'You split' : 'Bill split'}
+          </span>
+          <span className="font-mono text-base font-semibold text-violet-600">
+            {payload.totalAmount} {payload.symbol}
+          </span>
+        </div>
+      </div>
+      <p className="text-xs font-medium">{payload.description}</p>
+      <div className="flex flex-col gap-0.5 border-t pt-2">
+        {payload.shares.map((s) => (
+          <div key={s.address} className="flex items-center justify-between">
+            <span className="font-mono text-[10px] text-muted-foreground">
+              {shortenAddress(s.address)}
+            </span>
+            <span className="font-mono text-xs font-semibold">
+              {s.amount} {payload.symbol}
+            </span>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function BillSplitPaymentBubble({ payload, mine }: { payload: BillSplitPayment; mine: boolean }) {
+  return (
+    <Card className="flex w-64 flex-col gap-1.5 px-3 py-2.5">
+      <div className="flex items-center gap-2">
+        <span className="grid size-6 place-items-center rounded-full bg-emerald-500/10">
+          <IconCircleCheck className="size-3.5 text-emerald-600" />
+        </span>
+        <span className="text-xs font-semibold text-emerald-600">
+          {mine ? 'You paid your share' : `${shortenAddress(payload.payerAddress)} paid`}
+        </span>
+      </div>
+      {payload.txHash && <TxLink hash={payload.txHash} />}
+    </Card>
+  );
+}
+
+// ── Debt Overview ─────────────────────────────────────────────────────────────
+
+function DebtOverview({ debts, onPay }: { debts: DebtEntry[]; onPay: (d: DebtEntry) => void }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const iOwe = debts.filter((d) => d.direction === 'i-owe' && !d.paid);
+  const owedToMe = debts.filter((d) => d.direction === 'owed-to-me' && !d.paid);
+  const settled = debts.filter((d) => d.paid);
+  const pendingCount = iOwe.length + owedToMe.length;
+
+  return (
+    <Card className="flex flex-col gap-2 px-3 py-3">
+      <button
+        type="button"
+        onClick={() => setExpanded((e) => !e)}
+        className="flex items-center justify-between"
+      >
+        <div className="flex items-center gap-2">
+          <IconUsersGroup className="size-4 text-muted-foreground" />
+          <span className="text-sm font-semibold">Debts</span>
+          {pendingCount > 0 && (
+            <span className="rounded-full bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-violet-600">
+              {pendingCount} pending
+            </span>
+          )}
+        </div>
+        <span className="text-xs text-muted-foreground">{expanded ? '▲' : '▼'}</span>
+      </button>
+
+      {expanded && (
+        <div className="flex flex-col gap-3 border-t pt-2">
+          {iOwe.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-rose-600">
+                You owe
+              </span>
+              {iOwe.map((d) => (
+                <div key={`${d.billId}:${d.counterparty}`} className="flex items-center gap-2">
+                  <div className="flex flex-1 flex-col leading-tight">
+                    <span className="text-xs font-medium">{d.description}</span>
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                      → {shortenAddress(d.counterparty)}
+                    </span>
+                  </div>
+                  <span className="font-mono text-sm font-semibold text-rose-600">
+                    {d.amount.toFixed(2)} {d.symbol}
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => onPay(d)}
+                    className="h-7 px-2 text-[10px]"
+                  >
+                    Pay
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {owedToMe.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-600">
+                Owed to you
+              </span>
+              {owedToMe.map((d) => (
+                <div key={`${d.billId}:${d.counterparty}`} className="flex items-center gap-2">
+                  <div className="flex flex-1 flex-col leading-tight">
+                    <span className="text-xs font-medium">{d.description}</span>
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                      ← {shortenAddress(d.counterparty)}
+                    </span>
+                  </div>
+                  <span className="font-mono text-sm font-semibold text-emerald-600">
+                    {d.amount.toFixed(2)} {d.symbol}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground">Pending</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {iOwe.length === 0 && owedToMe.length === 0 && settled.length === 0 && (
+            <div className="flex flex-col items-center gap-1 py-2">
+              <IconReceiptOff className="size-5 text-muted-foreground" />
+              <span className="text-xs text-muted-foreground">All settled up</span>
+            </div>
+          )}
+
+          {settled.length > 0 && (
+            <div className="flex flex-col gap-1">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Settled
+              </span>
+              {settled.map((d) => (
+                <div key={`${d.billId}:${d.counterparty}:settled`} className="flex items-center gap-2">
+                  <div className="flex flex-1 flex-col leading-tight">
+                    <span className="text-xs text-muted-foreground line-through">{d.description}</span>
+                  </div>
+                  <span className="font-mono text-xs text-muted-foreground">
+                    {d.amount.toFixed(2)} {d.symbol}
+                  </span>
+                  <IconCircleCheck className="size-3.5 text-emerald-500" />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </Card>
   );
 }

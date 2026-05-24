@@ -83,7 +83,62 @@ export function isPaymentConfirmationContent(t: ContentTypeId | undefined): bool
 export const paymentConfirmationCodec: ContentCodec<PaymentConfirmation> =
   jsonCodec<PaymentConfirmation>(ContentTypePaymentConfirmation);
 
-export const ALL_CODECS = [paymentRequestCodec, paymentConfirmationCodec];
+// ── Bill Split ───────────────────────────────────────────────────────────────
+
+export const ContentTypeBillSplit: ContentTypeId = {
+  authorityId: AUTHORITY,
+  typeId: 'bill-split',
+  versionMajor: 1,
+  versionMinor: 0,
+};
+
+export interface BillSplit {
+  kind: 'bill-split';
+  appId: string;
+  billId: string;
+  description: string;
+  totalAmount: string;
+  symbol: string;
+  creator: string;
+  shares: { address: string; amount: string }[]; // what each non-creator member owes
+  createdAt: number;
+}
+
+export function isBillSplitContent(t: ContentTypeId | undefined): boolean {
+  return !!t && eq(t, ContentTypeBillSplit);
+}
+
+export const billSplitCodec: ContentCodec<BillSplit> =
+  jsonCodec<BillSplit>(ContentTypeBillSplit);
+
+export const ContentTypeBillSplitPayment: ContentTypeId = {
+  authorityId: AUTHORITY,
+  typeId: 'bill-split-payment',
+  versionMajor: 1,
+  versionMinor: 0,
+};
+
+export interface BillSplitPayment {
+  kind: 'bill-split-payment';
+  appId: string;
+  billId: string;
+  payerAddress: string;
+  txHash?: string;
+}
+
+export function isBillSplitPaymentContent(t: ContentTypeId | undefined): boolean {
+  return !!t && eq(t, ContentTypeBillSplitPayment);
+}
+
+export const billSplitPaymentCodec: ContentCodec<BillSplitPayment> =
+  jsonCodec<BillSplitPayment>(ContentTypeBillSplitPayment);
+
+export const ALL_CODECS = [
+  paymentRequestCodec,
+  paymentConfirmationCodec,
+  billSplitCodec,
+  billSplitPaymentCodec,
+];
 
 export function isValidPaymentRequest(
   payload: PaymentRequest,

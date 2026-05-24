@@ -2,9 +2,13 @@ import type { Client, Dm, DecodedMessage } from '@xmtp/browser-sdk';
 
 import { CRC_PREFIX, isCrcTransfer, parseCrcTransfer, type CrcTransferPayload } from './crcTransfer';
 import {
+  isBillSplitContent,
+  isBillSplitPaymentContent,
   isPaymentConfirmationContent,
   isPaymentRequestContent,
   isValidPaymentRequest,
+  type BillSplit,
+  type BillSplitPayment,
   type PaymentConfirmation,
   type PaymentRequest,
 } from './codecs';
@@ -35,6 +39,8 @@ export type DmMessage =
   | (Base & { kind: 'gif'; url: string })
   | (Base & { kind: 'crc-transfer'; payload: CrcTransferPayload; messageId: string })
   | (Base & { kind: 'payment-request'; payload: PaymentRequest; paidTxHash?: string })
+  | (Base & { kind: 'bill-split'; payload: BillSplit })
+  | (Base & { kind: 'bill-split-payment'; payload: BillSplitPayment })
   | (Base & { kind: 'unknown'; fallback?: string });
 
 const IMAGE_URL_RE = /^https?:\/\/\S+\.(?:gif|webp|png|jpe?g)(?:\?\S*)?$/i;
@@ -177,6 +183,18 @@ export async function fetchDmMessages(
       continue;
     }
 
+    if (isBillSplitContent(m.contentType)) {
+      const payload = m.content as BillSplit;
+      messages.push({ ...base, kind: 'bill-split', payload });
+      continue;
+    }
+
+    if (isBillSplitPaymentContent(m.contentType)) {
+      const payload = m.content as BillSplitPayment;
+      messages.push({ ...base, kind: 'bill-split-payment', payload });
+      continue;
+    }
+
     if (typeof m.content === 'string') {
       const text = m.content;
       if (isCrcTransfer(text)) {
@@ -275,6 +293,11 @@ async function lastPreview(dm: Dm): Promise<{ ts: number; preview: string }> {
     }
   } else if (isPaymentConfirmationContent(m.contentType)) {
     preview = 'Payment confirmed';
+  } else if (isBillSplitContent(m.contentType)) {
+    const p = m.content as BillSplit;
+    preview = `Split: ${p.description} ${p.totalAmount} ${p.symbol}`;
+  } else if (isBillSplitPaymentContent(m.contentType)) {
+    preview = 'Paid their share';
   } else if (m.fallback) {
     preview = m.fallback;
   } else {
@@ -291,10 +314,17 @@ async function groupLastPreview(g: {
   const ordered = [...msgs].sort((a, b) => Number(b.sentAtNs - a.sentAtNs));
   const m = ordered[0];
   const ts = Number(m.sentAtNs / 1_000_000_000n);
-  const preview =
-    typeof m.content === 'string'
-      ? m.content.slice(0, 80)
-      : (m.fallback ?? '…');
+  let preview: string;
+  if (typeof m.content === 'string') {
+    preview = m.content.slice(0, 80);
+  } else if (isBillSplitContent(m.contentType)) {
+    const p = m.content as BillSplit;
+    preview = `Split: ${p.description}`;
+  } else if (isBillSplitPaymentContent(m.contentType)) {
+    preview = 'Paid their share';
+  } else {
+    preview = m.fallback ?? '…';
+  }
   return { ts, preview };
 }
 
