@@ -9,6 +9,24 @@ import type { Client } from '@xmtp/browser-sdk';
 import type { SerialisedRemoteAttachment } from './codecs';
 
 const UPLOAD_ENDPOINT = '/api/blob-upload';
+const FETCH_ENDPOINT = '/api/blob-fetch';
+
+// Server route caps body at 4 MiB. Encryption adds ~28 bytes (GCM tag)
+// plus base64 overhead is irrelevant here (we send raw bytes). Leave a
+// healthy margin so the request never bounces with 413.
+const TARGET_BYTES = Math.floor(3.8 * 1024 * 1024);
+
+// Compression search space — applied in order, first hit under TARGET_BYTES
+// wins. Pairs of (scale, quality). Quality stops at 0.6 because below that
+// photos visibly degrade; tighter scaling is preferred.
+const COMPRESSION_STEPS: { scale: number; quality: number }[] = [
+  { scale: 1, quality: 0.85 },
+  { scale: 0.85, quality: 0.8 },
+  { scale: 0.7, quality: 0.75 },
+  { scale: 0.5, quality: 0.7 },
+  { scale: 0.4, quality: 0.65 },
+  { scale: 0.3, quality: 0.6 },
+];
 
 function bytesToBase64(bytes: Uint8Array): string {
   let bin = '';
@@ -34,10 +52,11 @@ function base64ToBytes(b64: string): Uint8Array {
 export async function encryptAndUploadFile(
   file: File,
 ): Promise<SerialisedRemoteAttachment> {
-  const data = new Uint8Array(await file.arrayBuffer());
+  const prepared = await shrinkIfNeeded(file, TARGET_BYTES);
+  const data = new Uint8Array(await prepared.arrayBuffer());
   const attachment: Attachment = {
-    filename: file.name,
-    mimeType: file.type || 'application/octet-stream',
+    filename: prepared.name,
+    mimeType: prepared.type || 'application/octet-stream',
     data,
   };
 
@@ -83,10 +102,19 @@ export async function encryptAndUploadFile(
     const err = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(err.error ?? `Upload failed: HTTP ${res.status}`);
   }
-  const { url } = (await res.json()) as { url: string };
+  const { pathname: storedPath } = (await res.json()) as {
+    url: string;
+    pathname: string;
+  };
+
+  // Recipient reads via our proxy route — private store URLs aren't
+  // world-readable, so direct `url` doesn't work for them.
+  const origin =
+    typeof window !== 'undefined' ? window.location.origin : '';
+  const proxyUrl = `${origin}${FETCH_ENDPOINT}?path=${encodeURIComponent(storedPath)}`;
 
   return {
-    url,
+    url: proxyUrl,
     contentDigest: encrypted.digest,
     salt: bytesToBase64(encrypted.salt),
     nonce: bytesToBase64(encrypted.nonce),
@@ -133,4 +161,72 @@ export async function loadRemoteAttachment(
 
 function safeName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
+}
+
+/**
+ * If `file` exceeds `maxBytes`, re-encode as WebP at decreasing scale +
+ * quality until it fits. Non-image files that exceed the limit throw —
+ * we can't generically compress arbitrary bytes.
+ */
+async function shrinkIfNeeded(file: File, maxBytes: number): Promise<File> {
+  if (file.size <= maxBytes) return file;
+  if (!file.type.startsWith('image/')) {
+    throw new Error(
+      `${file.name} is ${formatMB(file.size)} (over ${formatMB(maxBytes)}) and isn't an image, so it can't be compressed.`,
+    );
+  }
+  if (typeof document === 'undefined') {
+    throw new Error('Image compression requires a browser environment.');
+  }
+
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const img = await loadImage(objectUrl);
+    const baseName = file.name.replace(/\.[^.]+$/, '');
+    for (const { scale, quality } of COMPRESSION_STEPS) {
+      const blob = await reencodeWebp(img, scale, quality);
+      if (blob && blob.size <= maxBytes) {
+        return new File([blob], `${baseName}.webp`, {
+          type: 'image/webp',
+          lastModified: Date.now(),
+        });
+      }
+    }
+    throw new Error(
+      `Could not compress ${file.name} under ${formatMB(maxBytes)}. Try a smaller image.`,
+    );
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Failed to decode image for compression.'));
+    img.src = src;
+  });
+}
+
+async function reencodeWebp(
+  img: HTMLImageElement,
+  scale: number,
+  quality: number,
+): Promise<Blob | null> {
+  const w = Math.max(1, Math.round(img.naturalWidth * scale));
+  const h = Math.max(1, Math.round(img.naturalHeight * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.drawImage(img, 0, 0, w, h);
+  return new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, 'image/webp', quality),
+  );
+}
+
+function formatMB(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }

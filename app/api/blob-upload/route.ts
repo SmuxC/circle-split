@@ -46,11 +46,14 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   try {
     const blob = await put(pathname, body, {
-      access: 'public',
+      access: 'private',
       contentType: 'application/octet-stream',
       addRandomSuffix: false,
     });
-    return NextResponse.json({ url: blob.url });
+    // Return only the pathname — the client builds a proxy URL through our
+    // /api/blob-fetch route so private blobs can be read by recipients who
+    // don't hold the read/write token.
+    return NextResponse.json({ url: blob.url, pathname: blob.pathname });
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : String(e) },
