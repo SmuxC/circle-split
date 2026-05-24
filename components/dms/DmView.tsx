@@ -3,6 +3,7 @@
 import {
   IconArrowDownLeft,
   IconArrowUpRight,
+  IconCircleCheck,
   IconCoins,
   IconGif,
   IconLoader2,
@@ -30,6 +31,7 @@ import {
   sendDmText,
   type DmMessage,
 } from '@/lib/xmtp/dms';
+import { sendPaymentConfirmation } from '@/lib/xmtp/requests';
 
 export function DmView({ conversationId }: { conversationId: string }) {
   const { client, status, tick } = useXmtp();
@@ -47,6 +49,13 @@ export function DmView({ conversationId }: { conversationId: string }) {
 
   // Map of messageId → txHash for CRC transfers sent this session.
   const [crcTxHashes, setCrcTxHashes] = useState<Map<string, string>>(new Map());
+
+  // Non-null when paying an incoming payment request.
+  const [payReq, setPayReq] = useState<{
+    requestId: string;
+    amount: string;
+    note?: string;
+  } | null>(null);
 
   useEffect(() => {
     if (!client) return;
@@ -127,6 +136,37 @@ export function DmView({ conversationId }: { conversationId: string }) {
     }
   };
 
+  const handlePayRequest = (msg: Extract<DmMessage, { kind: 'payment-request' }>) => {
+    setPayReq({ requestId: msg.payload.requestId, amount: msg.payload.amount, note: msg.payload.message });
+    setCrcOpen(false);
+  };
+
+  const handlePayReqSend = async (amountCRC: string, note: string) => {
+    if (!dm || !address || !peer || !payReq) return;
+    setSending(true);
+    try {
+      const { hash, messageId } = await callCrcTransfer({
+        source: address,
+        sink: peer,
+        amountCRC,
+        note,
+        peerDisplay: shortenAddress(peer),
+        conversation: dm as unknown as Parameters<typeof callCrcTransfer>[0]['conversation'],
+      });
+      setCrcTxHashes((prev) => new Map(prev).set(messageId, hash));
+      await sendPaymentConfirmation(dm as import('@xmtp/browser-sdk').Dm, {
+        requestId: payReq.requestId,
+        txHash: hash,
+        messageId,
+      });
+      setPayReq(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSending(false);
+    }
+  };
+
   if (status !== 'ready') {
     return (
       <Card className="flex flex-col items-center gap-2 px-6 py-10 text-center">
@@ -171,6 +211,7 @@ export function DmView({ conversationId }: { conversationId: string }) {
               myAddress={address ?? ''}
               overrideTxHash={m.kind === 'crc-transfer' ? crcTxHashes.get(m.messageId) : undefined}
               connectedAddress={address ?? ''}
+              onPayRequest={handlePayRequest}
             />
           ))}
       </div>
@@ -182,6 +223,18 @@ export function DmView({ conversationId }: { conversationId: string }) {
           onSend={handleCrcSend}
           onClose={() => setCrcOpen(false)}
           sending={sending}
+        />
+      )}
+      {payReq && (
+        <CrcTransferSheet
+          myAddress={address ?? ''}
+          peerAddress={peer}
+          onSend={handlePayReqSend}
+          onClose={() => setPayReq(null)}
+          sending={sending}
+          initialAmount={payReq.amount}
+          initialNote={payReq.note}
+          title="Pay Request"
         />
       )}
 
@@ -201,7 +254,7 @@ export function DmView({ conversationId }: { conversationId: string }) {
         <button
           type="button"
           aria-label="Send CRC"
-          onClick={() => setCrcOpen((o) => !o)}
+          onClick={() => { setCrcOpen((o) => !o); setPayReq(null); }}
           className={cn(
             'grid size-9 shrink-0 place-items-center rounded-md transition-colors',
             crcOpen
@@ -250,15 +303,21 @@ function CrcTransferSheet({
   onSend,
   onClose,
   sending,
+  initialAmount,
+  initialNote,
+  title = 'Send CRC',
 }: {
   myAddress: string;
   peerAddress: string;
   onSend: (amount: string, note: string) => Promise<void>;
   onClose: () => void;
   sending: boolean;
+  initialAmount?: string;
+  initialNote?: string;
+  title?: string;
 }) {
-  const [amount, setAmount] = useState('');
-  const [note, setNote] = useState('');
+  const [amount, setAmount] = useState(initialAmount ?? '');
+  const [note, setNote] = useState(initialNote ?? '');
   const [maxFlow, setMaxFlow] = useState<string | null>(null);
   const [loadingMax, setLoadingMax] = useState(false);
 
@@ -287,7 +346,7 @@ function CrcTransferSheet({
   return (
     <Card className="flex flex-col gap-3 px-4 py-4">
       <div className="flex items-center justify-between">
-        <span className="text-sm font-semibold">Send CRC</span>
+        <span className="text-sm font-semibold">{title}</span>
         <button
           type="button"
           onClick={onClose}
@@ -351,11 +410,13 @@ function MessageBubble({
   myAddress,
   overrideTxHash,
   connectedAddress,
+  onPayRequest,
 }: {
   message: DmMessage;
   myAddress: string;
   overrideTxHash?: string;
   connectedAddress: string;
+  onPayRequest?: (msg: Extract<DmMessage, { kind: 'payment-request' }>) => void;
 }) {
   const mine = message.mine;
   const align = mine ? 'self-end' : 'self-start';
@@ -402,7 +463,13 @@ function MessageBubble({
     case 'payment-request':
       return (
         <div className={cn('flex flex-col gap-0.5', align)}>
-          <PaymentRequestCard message={message} myAddress={myAddress} />
+          <PaymentRequestCard
+            message={message}
+            myAddress={myAddress}
+            onPay={!message.mine && !message.paidTxHash && onPayRequest
+              ? () => onPayRequest(message)
+              : undefined}
+          />
           <Timestamp ts={message.ts} mine={mine} />
         </div>
       );
@@ -516,15 +583,18 @@ function Timestamp({ ts, mine }: { ts: number; mine: boolean }) {
 function PaymentRequestCard({
   message,
   myAddress,
+  onPay,
 }: {
   message: Extract<DmMessage, { kind: 'payment-request' }>;
   myAddress: string;
+  onPay?: () => void;
 }) {
   const p = message.payload;
   const me = myAddress.toLowerCase();
   const incoming = p.requester.toLowerCase() !== me;
   const Icon = incoming ? IconArrowUpRight : IconArrowDownLeft;
   const color = incoming ? 'text-rose-600' : 'text-emerald-600';
+  const paid = !!message.paidTxHash;
 
   return (
     <Card className="flex w-72 flex-col gap-2 px-3 py-3">
@@ -547,6 +617,26 @@ function PaymentRequestCard({
         </div>
       </div>
       {p.message && <p className="text-xs text-muted-foreground">{p.message}</p>}
+      {paid ? (
+        <div className="flex items-center gap-1 text-xs text-emerald-600">
+          <IconCircleCheck className="size-3" />
+          <span>Paid</span>
+          {message.paidTxHash && (
+            <a
+              href={`https://gnosisscan.io/tx/${message.paidTxHash}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline-offset-2 hover:underline"
+            >
+              ↗
+            </a>
+          )}
+        </div>
+      ) : onPay ? (
+        <Button type="button" size="sm" onClick={onPay} className="self-end text-xs">
+          Pay {p.amount} {p.symbol}
+        </Button>
+      ) : null}
     </Card>
   );
 }

@@ -3,6 +3,7 @@
 import {
   IconArrowDownLeft,
   IconArrowUpRight,
+  IconCircleCheck,
   IconLoader2,
   IconPlugConnected,
   IconReceipt,
@@ -169,11 +170,26 @@ function RequestRow({ record: r }: { record: PaymentRequestRecord }) {
       {r.message && (
         <p className="border-t border-border pt-2 text-xs text-muted-foreground">{r.message}</p>
       )}
-      {r.mode === 'split' && (
-        <span className="self-start rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-          Split
-        </span>
-      )}
+      <div className="flex items-center gap-2">
+        {r.mode === 'split' && (
+          <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            Split
+          </span>
+        )}
+        {r.paidTxHash ? (
+          <a
+            href={`https://gnosisscan.io/tx/${r.paidTxHash}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 text-xs text-emerald-600 underline-offset-2 hover:underline"
+          >
+            <IconCircleCheck className="size-3" />
+            Paid ↗
+          </a>
+        ) : r.direction === 'incoming' ? (
+          <span className="text-[10px] text-muted-foreground">Pending</span>
+        ) : null}
+      </div>
     </Card>
   );
 }

@@ -3,9 +3,12 @@ import type { Client, Dm } from '@xmtp/browser-sdk';
 import {
   APP_ID,
   ContentTypePaymentRequest,
+  isPaymentConfirmationContent,
   isPaymentRequestContent,
   isValidPaymentRequest,
+  paymentConfirmationCodec,
   paymentRequestCodec,
+  type PaymentConfirmation,
   type PaymentRequest,
 } from './codecs';
 
@@ -20,6 +23,7 @@ export type PaymentRequestRecord = {
   mode: 'request' | 'split';
   ts: number;
   direction: 'incoming' | 'outgoing';
+  paidTxHash?: string;
 };
 
 export async function sendPaymentRequest(
@@ -75,9 +79,18 @@ export async function listPaymentRequests(
   for (const dm of dms) {
     try {
       await dm.sync();
-      const msgs = await dm.messages({ limit: 100n });
+      const msgs = await dm.messages({ limit: 200n });
       const peerMap = await dmSenderMap(dm);
 
+      // Pass 1: collect confirmations keyed by requestId
+      const confirmations = new Map<string, string | undefined>();
+      for (const m of msgs) {
+        if (!isPaymentConfirmationContent(m.contentType)) continue;
+        const conf = m.content as PaymentConfirmation;
+        if (conf?.requestId) confirmations.set(conf.requestId, conf.txHash);
+      }
+
+      // Pass 2: collect payment requests
       for (const m of msgs) {
         if (!isPaymentRequestContent(m.contentType)) continue;
         const payload = m.content as PaymentRequest;
@@ -101,6 +114,7 @@ export async function listPaymentRequests(
           mode: payload.mode,
           ts: payload.ts,
           direction,
+          paidTxHash: confirmations.get(payload.requestId),
         });
       }
     } catch {}
@@ -118,6 +132,20 @@ async function dmSenderMap(dm: Dm): Promise<Map<string, string>> {
     if (eth) map.set(m.inboxId, eth.identifier.toLowerCase());
   }
   return map;
+}
+
+export async function sendPaymentConfirmation(
+  dm: Dm,
+  args: { requestId: string; txHash?: string; messageId?: string },
+): Promise<void> {
+  const payload: PaymentConfirmation = {
+    kind: 'payment-confirmation',
+    appId: APP_ID,
+    requestId: args.requestId,
+    txHash: args.txHash,
+    messageId: args.messageId,
+  };
+  await dm.send(paymentConfirmationCodec.encode(payload));
 }
 
 export { ContentTypePaymentRequest };

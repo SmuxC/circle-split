@@ -59,7 +59,31 @@ function jsonCodec<T>(contentType: ContentTypeId): ContentCodec<T> {
 export const paymentRequestCodec: ContentCodec<PaymentRequest> =
   jsonCodec<PaymentRequest>(ContentTypePaymentRequest);
 
-export const ALL_CODECS = [paymentRequestCodec];
+// ── Payment Confirmation ─────────────────────────────────────────────────────
+
+export const ContentTypePaymentConfirmation: ContentTypeId = {
+  authorityId: AUTHORITY,
+  typeId: 'payment-confirmation',
+  versionMajor: 1,
+  versionMinor: 0,
+};
+
+export interface PaymentConfirmation {
+  kind: 'payment-confirmation';
+  appId: string;
+  requestId: string;
+  txHash?: string;
+  messageId?: string;
+}
+
+export function isPaymentConfirmationContent(t: ContentTypeId | undefined): boolean {
+  return !!t && eq(t, ContentTypePaymentConfirmation);
+}
+
+export const paymentConfirmationCodec: ContentCodec<PaymentConfirmation> =
+  jsonCodec<PaymentConfirmation>(ContentTypePaymentConfirmation);
+
+export const ALL_CODECS = [paymentRequestCodec, paymentConfirmationCodec];
 
 export function isValidPaymentRequest(
   payload: PaymentRequest,

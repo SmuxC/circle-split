@@ -2,8 +2,10 @@ import type { Client, Dm, DecodedMessage } from '@xmtp/browser-sdk';
 
 import { CRC_PREFIX, isCrcTransfer, parseCrcTransfer, type CrcTransferPayload } from './crcTransfer';
 import {
+  isPaymentConfirmationContent,
   isPaymentRequestContent,
   isValidPaymentRequest,
+  type PaymentConfirmation,
   type PaymentRequest,
 } from './codecs';
 
@@ -32,7 +34,7 @@ export type DmMessage =
   | (Base & { kind: 'text'; text: string })
   | (Base & { kind: 'gif'; url: string })
   | (Base & { kind: 'crc-transfer'; payload: CrcTransferPayload; messageId: string })
-  | (Base & { kind: 'payment-request'; payload: PaymentRequest })
+  | (Base & { kind: 'payment-request'; payload: PaymentRequest; paidTxHash?: string })
   | (Base & { kind: 'unknown'; fallback?: string });
 
 const IMAGE_URL_RE = /^https?:\/\/\S+\.(?:gif|webp|png|jpe?g)(?:\?\S*)?$/i;
@@ -145,8 +147,19 @@ export async function fetchDmMessages(
   const senderMap = await senderAddressMap(dm);
   const myInbox = await safeInboxId(client);
 
+  // Pass 1: collect payment confirmations keyed by requestId
+  const confirmations = new Map<string, string | undefined>();
+  for (const m of ordered) {
+    if (!isPaymentConfirmationContent(m.contentType)) continue;
+    const conf = m.content as PaymentConfirmation;
+    if (conf?.requestId) confirmations.set(conf.requestId, conf.txHash);
+  }
+
   const messages: DmMessage[] = [];
   for (const m of ordered) {
+    // Skip confirmation messages — surfaced via paidTxHash on the request
+    if (isPaymentConfirmationContent(m.contentType)) continue;
+
     const sender = senderMap.get(m.senderInboxId) ?? '0x';
     const ts = Number(m.sentAtNs / 1_000_000_000n);
     const id = m.id ?? `${m.senderInboxId}:${m.sentAtNs.toString()}`;
@@ -159,7 +172,8 @@ export async function fetchDmMessages(
         messages.push({ ...base, kind: 'unknown', fallback: m.fallback });
         continue;
       }
-      messages.push({ ...base, kind: 'payment-request', payload });
+      const paidTxHash = confirmations.get(payload.requestId);
+      messages.push({ ...base, kind: 'payment-request', payload, paidTxHash });
       continue;
     }
 
@@ -259,6 +273,8 @@ async function lastPreview(dm: Dm): Promise<{ ts: number; preview: string }> {
     } else {
       preview = text;
     }
+  } else if (isPaymentConfirmationContent(m.contentType)) {
+    preview = 'Payment confirmed';
   } else if (m.fallback) {
     preview = m.fallback;
   } else {
