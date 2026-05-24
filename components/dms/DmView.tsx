@@ -284,7 +284,7 @@ export function DmView({ conversationId }: { conversationId: string }) {
         ref={scrollRef}
         className={cn(
           'flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 pt-3',
-          anySheetOpen ? 'pb-[22rem] md:pb-3' : 'pb-32 md:pb-3',
+          anySheetOpen ? 'pb-[24rem] md:pb-3' : 'pb-40 md:pb-3',
         )}
       >
         {loading && (
@@ -314,7 +314,7 @@ export function DmView({ conversationId }: { conversationId: string }) {
       </div>
 
       {/* Input island — fixed above bottom nav on mobile, static at bottom on desktop */}
-      <div className="fixed inset-x-0 bottom-[4.5rem] z-50 flex flex-col gap-2 px-3 pb-2 md:static md:bottom-auto md:inset-auto md:px-3 md:pb-3">
+      <div className="fixed inset-x-0 bottom-24 z-50 flex flex-col gap-2 px-3 pb-2 md:static md:bottom-auto md:inset-auto md:px-3 md:pb-3">
         {crcOpen && (
           <CrcTransferSheet
             myAddress={address ?? ''}
@@ -534,7 +534,7 @@ function MessageBubble({
   const mine = message.mine;
   const align = mine ? 'self-end' : 'self-start';
   const bubble = cn(
-    'max-w-[80%] rounded-2xl px-3 py-2 text-sm',
+    'w-fit max-w-[80%] rounded-2xl px-3 py-2 text-sm',
     mine
       ? 'rounded-br-sm bg-foreground text-background'
       : 'rounded-bl-sm bg-card text-foreground border',
