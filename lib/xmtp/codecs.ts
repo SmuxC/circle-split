@@ -36,6 +36,13 @@ export const ContentTypeMemberAdded: ContentTypeId = {
   versionMinor: 0,
 };
 
+export const ContentTypePaymentRequest: ContentTypeId = {
+  authorityId: AUTHORITY,
+  typeId: 'payment-request',
+  versionMajor: 1,
+  versionMinor: 0,
+};
+
 export interface TripInit {
   kind: 'trip-init';
   appId: string;
@@ -64,6 +71,28 @@ export interface MemberAdded {
   ts: number;
 }
 
+export interface PaymentRequest {
+  kind: 'payment-request';
+  appId: string;
+  requestId: string;
+  // Address of the wallet asking to be paid.
+  requester: string;
+  // Address expected to pay (DM recipient — denormalised for indexing).
+  payer: string;
+  // Decimal string, e.g. "12.50". Not atto-units.
+  amount: string;
+  // Token symbol shown to user (e.g. "EUR", "USDC").
+  symbol: string;
+  // Optional free-text note.
+  message?: string;
+  // Optional attachment URLs (currently local /gifs/* paths or omitted —
+  // file uploads are out of scope for this codec version).
+  attachments?: string[];
+  // 'request' or 'split' — for now both encoded the same way.
+  mode: 'request' | 'split';
+  ts: number;
+}
+
 function eq(a: ContentTypeId, b: ContentTypeId): boolean {
   return a.authorityId === b.authorityId && a.typeId === b.typeId;
 }
@@ -78,6 +107,10 @@ export function isExpenseContent(t: ContentTypeId | undefined): boolean {
 
 export function isMemberAddedContent(t: ContentTypeId | undefined): boolean {
   return !!t && eq(t, ContentTypeMemberAdded);
+}
+
+export function isPaymentRequestContent(t: ContentTypeId | undefined): boolean {
+  return !!t && eq(t, ContentTypePaymentRequest);
 }
 
 function jsonCodec<T>(contentType: ContentTypeId): ContentCodec<T> {
@@ -106,8 +139,34 @@ export const expenseCodec: ContentCodec<Expense> = jsonCodec<Expense>(ContentTyp
 export const memberAddedCodec: ContentCodec<MemberAdded> = jsonCodec<MemberAdded>(
   ContentTypeMemberAdded,
 );
+export const paymentRequestCodec: ContentCodec<PaymentRequest> =
+  jsonCodec<PaymentRequest>(ContentTypePaymentRequest);
 
-export const ALL_CODECS = [tripInitCodec, expenseCodec, memberAddedCodec];
+export const ALL_CODECS = [
+  tripInitCodec,
+  expenseCodec,
+  memberAddedCodec,
+  paymentRequestCodec,
+];
+
+/**
+ * Validates a payment-request payload. Requester must equal the DM sender;
+ * the payer claim is informational (we trust the DM channel itself to be
+ * 1:1 with the intended payer, but check for outright tampering).
+ */
+export function isValidPaymentRequest(
+  payload: PaymentRequest,
+  senderAddress: string,
+): boolean {
+  if (payload.kind !== 'payment-request') return false;
+  if (payload.appId !== APP_ID) return false;
+  if (payload.requester.toLowerCase() !== senderAddress.toLowerCase()) return false;
+  if (!payload.amount || isNaN(Number(payload.amount)) || Number(payload.amount) <= 0)
+    return false;
+  if (!payload.symbol) return false;
+  if (payload.mode !== 'request' && payload.mode !== 'split') return false;
+  return true;
+}
 
 /**
  * Validates a trip-init payload against the XMTP message sender + group

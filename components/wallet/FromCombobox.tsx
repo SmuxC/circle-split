@@ -51,7 +51,11 @@ function pickAddress(h: SearchHit): string | null {
   return null;
 }
 
-export function FromCombobox() {
+export function FromCombobox({
+  onSelect,
+}: {
+  onSelect?: (row: { address: string; name: string } | null) => void;
+} = {}) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
@@ -176,7 +180,12 @@ export function FromCombobox() {
         <Card className={cn('overflow-hidden p-0 py-0', open && 'rounded-b-none')}>
           <Input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              // Typing invalidates a prior selection — clear it so the
+              // submit handler can re-check.
+              onSelect?.(null);
+            }}
             onFocus={() => setOpen(true)}
             onClick={() => setOpen(true)}
             placeholder="Circle, ENS handle or address"
@@ -221,6 +230,7 @@ export function FromCombobox() {
                     onClick={() => {
                       setQuery(p.name);
                       setOpen(false);
+                      onSelect?.({ address: p.address, name: p.name || p.address });
                     }}
                     className="flex w-full items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-accent"
                   >

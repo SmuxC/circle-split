@@ -1,4 +1,5 @@
 import { BillsDashboard } from '@/components/bills/BillsDashboard';
+import { RequestList } from '@/components/requests/RequestList';
 
 export default function BillsPage() {
   return (
@@ -9,6 +10,13 @@ export default function BillsPage() {
           Debts across all your trips. Who owes you, who you owe.
         </p>
       </div>
+
+      <RequestList
+        direction="incoming"
+        title="Payment requests"
+        emptyLabel="No incoming payment requests."
+      />
+
       <BillsDashboard />
     </div>
   );

@@ -107,7 +107,9 @@ export function XmtpProvider({ children }: { children: React.ReactNode }) {
         convStream = (await client.conversations.stream({ onValue: bump })) as {
           end: () => Promise<unknown>;
         };
-        msgStream = (await client.conversations.streamAllGroupMessages({
+        // Cover both groups (trips) and DMs (payment requests) with a single
+        // stream so any inbound payload bumps tick.
+        msgStream = (await client.conversations.streamAllMessages({
           onValue: bump,
           consentStates: [0, 1] as never,
         })) as { end: () => Promise<unknown> };

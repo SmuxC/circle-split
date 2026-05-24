@@ -1,3 +1,4 @@
+import { RequestList } from '@/components/requests/RequestList';
 import { UserAvatar } from '@/components/wallet/UserAvatar';
 
 export default function HomePage() {
@@ -8,10 +9,16 @@ export default function HomePage() {
         <div className="text-center">
           <h1 className="text-xl font-semibold tracking-tight">Home</h1>
           <p className="text-sm text-muted-foreground">
-            Start building your Circles miniapp here.
+            Latest payment requests across your XMTP inbox.
           </p>
         </div>
       </div>
+
+      <RequestList
+        limit={10}
+        title="Recent requests"
+        emptyLabel="No payment requests yet. Create one from the New tab."
+      />
     </div>
   );
 }
