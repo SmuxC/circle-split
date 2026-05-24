@@ -188,7 +188,7 @@ export function DmView({ conversationId }: { conversationId: string }) {
 
       <div
         ref={scrollRef}
-        className="flex flex-1 flex-col gap-2 overflow-y-auto rounded-lg border bg-muted/30 p-3"
+        className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto rounded-lg border bg-muted/30 p-3"
       >
         {loading && (
           <div className="flex flex-col gap-2">
@@ -238,7 +238,7 @@ export function DmView({ conversationId }: { conversationId: string }) {
         />
       )}
 
-      <Card className="flex items-center gap-2 px-2 py-2">
+      <Card className="flex-row items-center gap-2 px-2 py-2">
         <GifDrawer
           onSelect={handlePickGif}
           trigger={
@@ -344,7 +344,7 @@ function CrcTransferSheet({
   const canSend = amount && amountNum > 0 && !overMax && !sending;
 
   return (
-    <Card className="flex flex-col gap-3 px-4 py-4">
+    <Card className="flex flex-col gap-3 overflow-y-auto px-4 py-4">
       <div className="flex items-center justify-between">
         <span className="text-sm font-semibold">{title}</span>
         <button
