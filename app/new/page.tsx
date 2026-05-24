@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
 
 import {
   IconLoader2,
@@ -36,6 +37,7 @@ const MOCK_TRANSACTIONS = [
 // ── Split page ────────────────────────────────────────────────────────────────
 
 function BillSplitPage() {
+  const router = useRouter();
   const { client, status, error: xmtpError, connect } = useXmtp();
   const { address, isConnected } = useWallet();
   const sortedConversations = useInboxStore((s) => s.sortedConversations);
@@ -110,7 +112,7 @@ function BillSplitPage() {
         shares,
       });
       const isGroup = !selectedConv?.isDm;
-      window.location.href = isGroup ? `/groups/${selectedConvId}` : `/dms/${selectedConvId}`;
+      router.push(isGroup ? `/groups/${selectedConvId}` : `/dms/${selectedConvId}`);
     } catch (e) {
       setSendError(e instanceof Error ? e.message : String(e));
     } finally {

@@ -39,6 +39,7 @@ export function XmtpProvider({ children }: { children: React.ReactNode }) {
   const ownedBy = useRef<string | null>(null);
 
   const { addConversations, addConversation, addMessage, reset } = useInboxStore();
+  const autoAttempted = useRef(false);
 
   const disconnect = useCallback(() => {
     setClient(null);
@@ -128,13 +129,50 @@ export function XmtpProvider({ children }: { children: React.ReactNode }) {
   // Disconnect on wallet change / disconnect.
   useEffect(() => {
     if (!isConnected) {
-      if (ownedBy.current) disconnect();
+      if (ownedBy.current) {
+        disconnect();
+        autoAttempted.current = false;
+      }
       return;
     }
     if (address && ownedBy.current && ownedBy.current !== address.toLowerCase()) {
       disconnect();
+      autoAttempted.current = false;
     }
   }, [address, isConnected, disconnect]);
+
+  // Auto-connect when wallet arrives (silent — no user gesture needed for returning users
+  // whose XMTP DB is already in OPFS). Skips if inside a cross-origin iframe without
+  // storage access already granted (requestStorageAccess needs a user gesture; the manual
+  // "Connect XMTP" button handles that path).
+  useEffect(() => {
+    if (!address || !isConnected || status !== 'idle') return;
+    if (autoAttempted.current) return;
+    autoAttempted.current = true;
+
+    const tryAuto = async () => {
+      if (typeof window !== 'undefined' && window.top !== window.self) {
+        if ('hasStorageAccess' in document) {
+          const doc = document as Document & { hasStorageAccess: () => Promise<boolean> };
+          try {
+            const hasAccess = await doc.hasStorageAccess();
+            if (!hasAccess) return;
+          } catch {
+            return;
+          }
+        }
+      }
+      await connect();
+      // connect() swallows errors internally and sets status='error'.
+      // Reset to idle so the manual "Connect XMTP" button is shown, not an error state.
+      setStatus((s) => (s === 'error' ? 'idle' : s));
+      setError(null);
+    };
+
+    void tryAuto();
+  // connect identity is stable (wrapped in useCallback), address/isConnected drive re-check
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [address, isConnected, status]);
 
   // Populate store + start streams when client is ready.
   useEffect(() => {

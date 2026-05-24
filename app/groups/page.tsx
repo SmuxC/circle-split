@@ -9,6 +9,7 @@ import {
   IconUsers,
 } from '@tabler/icons-react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
@@ -22,6 +23,7 @@ import { listAllConversations, type DmSummary } from '@/lib/xmtp/dms';
 import { useInboxStore } from '@/lib/xmtp/store';
 
 export default function GroupsPage() {
+  const router = useRouter();
   const { isConnected } = useWallet();
   const { client, status, error, connect, tick } = useXmtp();
   const sortedConversations = useInboxStore((s) => s.sortedConversations);
@@ -93,13 +95,13 @@ export default function GroupsPage() {
       }) as { id: string };
       setNewDmOpen(false);
       setNewDmAddr('');
-      window.location.href = `/dms/${dm.id}`;
+      router.push(`/dms/${dm.id}`);
     } catch (e) {
       setCreateError(e instanceof Error ? e.message : 'Could not create DM.');
     } finally {
       setCreating(false);
     }
-  }, [client, newDmAddr]);
+  }, [client, newDmAddr, router]);
 
   const handleNewGroup = useCallback(async () => {
     if (!client) return;
@@ -123,13 +125,13 @@ export default function GroupsPage() {
       setNewGroupOpen(false);
       setGroupAddrs(['']);
       setGroupName('');
-      window.location.href = `/groups/${group.id}`;
+      router.push(`/groups/${group.id}`);
     } catch (e) {
       setGroupCreateError(e instanceof Error ? e.message : 'Could not create group.');
     } finally {
       setCreatingGroup(false);
     }
-  }, [client, groupAddrs, groupName]);
+  }, [client, groupAddrs, groupName, router]);
 
   if (!isConnected) {
     return (
