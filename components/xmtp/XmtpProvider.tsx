@@ -8,6 +8,36 @@ import { useWallet } from '@/hooks/use-wallet';
 
 type Status = 'idle' | 'connecting' | 'ready' | 'error';
 
+/**
+ * Returns a stable per-wallet 32-byte AES key used to encrypt the XMTP
+ * OPFS database. Persisting it in localStorage means we can reopen the
+ * same DB across reloads — same key + same dbPath = same installation,
+ * which is what stops iOS from minting a fresh one every refresh.
+ */
+function getOrCreateDbKey(address: string): Uint8Array {
+  const storageKey = `xmtp-db-key:${address}`;
+  if (typeof window !== 'undefined' && window.localStorage) {
+    const existing = window.localStorage.getItem(storageKey);
+    if (existing) {
+      const bin = atob(existing);
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      if (out.byteLength === 32) return out;
+    }
+  }
+  const fresh = crypto.getRandomValues(new Uint8Array(32));
+  if (typeof window !== 'undefined' && window.localStorage) {
+    let bin = '';
+    for (let i = 0; i < fresh.byteLength; i++) bin += String.fromCharCode(fresh[i]);
+    try {
+      window.localStorage.setItem(storageKey, btoa(bin));
+    } catch {
+      // Storage full / disabled — DB will reopen as fresh on next visit.
+    }
+  }
+  return fresh;
+}
+
 type XmtpContextValue = {
   client: Client | null;
   status: Status;
@@ -53,17 +83,68 @@ export function XmtpProvider({ children }: { children: React.ReactNode }) {
     setStatus('connecting');
     setError(null);
     try {
-      const { Client } = await import('@xmtp/browser-sdk');
+      // Storage Access API: iOS Safari + other browsers partition iframe
+      // storage to the parent site by default. Without storage access the
+      // XMTP OPFS DB is wiped between visits, so every refresh allocates a
+      // fresh installation — burning through the 10-installation cap fast.
+      // Best-effort; ignored where unsupported or not iframed.
+      try {
+        if (
+          typeof document !== 'undefined' &&
+          'requestStorageAccess' in document &&
+          window.top !== window.self
+        ) {
+          await (document as Document & { requestStorageAccess: () => Promise<void> })
+            .requestStorageAccess();
+        }
+      } catch {
+        // User denied or browser doesn't support it — proceed; we'll fall
+        // back to recovering from the 10/10 error below.
+      }
+
+      const sdk = await import('@xmtp/browser-sdk');
+      const { Client, createBackend, getInboxIdForIdentifier } = sdk;
       const { buildXmtpSigner } = await import('@/lib/xmtp/signer');
       const { ALL_CODECS } = await import('@/lib/xmtp/codecs');
       const signer = await buildXmtpSigner(address);
-      // XMTP's ContentCodec generic is invariant and its ClientOptions is a
-      // discriminated union; cast at the registration boundary.
-      const c = (await Client.create(signer, {
+
+      const me = address.toLowerCase();
+      const dbPath = `xmtp-${me}.db3`;
+      const dbEncryptionKey = getOrCreateDbKey(me);
+
+      const baseOptions = {
         env: 'production',
         codecs: ALL_CODECS,
-      } as unknown as Parameters<typeof Client.create>[1])) as unknown as Client;
-      ownedBy.current = address.toLowerCase();
+        dbPath,
+        dbEncryptionKey,
+      } as unknown as Parameters<typeof Client.create>[1];
+
+      let c: Client;
+      try {
+        c = (await Client.create(signer, baseOptions)) as unknown as Client;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        // Recover from "already registered 10/10 installations" by revoking
+        // every existing installation, then retrying. This costs the user
+        // one extra signature but avoids needing them to revoke manually.
+        if (/10\s*\/\s*10\s+installations/i.test(msg)) {
+          const backend = await createBackend({
+            env: 'production',
+          } as unknown as Parameters<typeof createBackend>[0]);
+          const identifier = await signer.getIdentifier();
+          const inboxId = await getInboxIdForIdentifier(backend, identifier);
+          if (!inboxId) throw e;
+          const states = await Client.fetchInboxStates([inboxId], backend);
+          const installationBytes = states[0]?.installations.map((i) => i.bytes) ?? [];
+          if (installationBytes.length === 0) throw e;
+          await Client.revokeInstallations(signer, inboxId, installationBytes, backend);
+          c = (await Client.create(signer, baseOptions)) as unknown as Client;
+        } else {
+          throw e;
+        }
+      }
+
+      ownedBy.current = me;
       setClient(c);
       setStatus('ready');
     } catch (e) {
