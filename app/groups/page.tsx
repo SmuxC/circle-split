@@ -1,3 +1,4 @@
+import { DmList } from '@/components/dms/DmList';
 import { TripList } from '@/components/trips/TripList';
 
 export default function GroupsPage() {
@@ -10,6 +11,14 @@ export default function GroupsPage() {
         </p>
       </div>
       <TripList />
+
+      <div>
+        <h2 className="text-xl font-semibold tracking-tight">DMs</h2>
+        <p className="text-sm text-muted-foreground">
+          1:1 encrypted chats with payment requests, photos, and GIFs.
+        </p>
+      </div>
+      <DmList />
     </div>
   );
 }

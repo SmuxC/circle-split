@@ -61,21 +61,19 @@ function base64ToBytes(b64: string): Uint8Array {
 }
 
 /**
- * Encrypts a single File using XMTP's RemoteAttachmentCodec, uploads the
- * ciphertext to Vercel Blob, and returns the JSON-safe metadata needed by
- * the recipient to fetch + decrypt.
- *
- * The ciphertext is opaque bytes; only holders of the secret embedded in
- * the (separately E2E-encrypted) XMTP message can decrypt it.
+ * Internal: compress (if needed) → encrypt with RemoteAttachmentCodec →
+ * upload ciphertext → return the raw RemoteAttachment plus mimeType.
  */
-export async function encryptAndUploadFile(
-  file: File,
-): Promise<SerialisedRemoteAttachment> {
+async function uploadAndBuild(file: File): Promise<{
+  remote: RemoteAttachment;
+  mimeType: string;
+}> {
   const prepared = await shrinkIfNeeded(file, TARGET_BYTES);
   const data = new Uint8Array(await prepared.arrayBuffer());
+  const mimeType = prepared.type || 'application/octet-stream';
   const attachment: Attachment = {
     filename: prepared.name,
-    mimeType: prepared.type || 'application/octet-stream',
+    mimeType,
     data,
   };
 
@@ -87,9 +85,7 @@ export async function encryptAndUploadFile(
   // Direct POST to our own endpoint. The endpoint uses server-side `put()`
   // which avoids the client-token + cross-origin PUT dance that was
   // silently hanging behind 10 retries inside the Circles iframe.
-  const pathname = `xmtp-attachments/${crypto.randomUUID()}-${safeName(file.name)}`;
-  // 60s ceiling — well past a healthy upload, short enough that genuine
-  // failure surfaces instead of leaving the submit button spinning forever.
+  const pathname = `xmtp-attachments/${crypto.randomUUID()}-${safeName(prepared.name)}`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 60_000);
 
@@ -101,8 +97,6 @@ export async function encryptAndUploadFile(
         'content-type': 'application/octet-stream',
         'x-pathname': pathname,
       },
-      // `encrypted.payload` is a Uint8Array. `BodyInit` accepts it directly
-      // in browsers, but TS typings via fetch lib lag; cast for now.
       body: encrypted.payload as BodyInit,
       signal: controller.signal,
     });
@@ -126,23 +120,58 @@ export async function encryptAndUploadFile(
     pathname: string;
   };
 
-  // Recipient reads via our proxy route — private store URLs aren't
-  // world-readable, so direct `url` doesn't work for them.
-  const origin =
-    typeof window !== 'undefined' ? window.location.origin : '';
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const proxyUrl = `${origin}${FETCH_ENDPOINT}?path=${encodeURIComponent(storedPath)}`;
 
-  return {
+  const remote: RemoteAttachment = {
     url: proxyUrl,
     contentDigest: encrypted.digest,
-    salt: bytesToBase64(encrypted.salt),
-    nonce: bytesToBase64(encrypted.nonce),
-    secret: bytesToBase64(encrypted.secret),
+    salt: encrypted.salt,
+    nonce: encrypted.nonce,
+    secret: encrypted.secret,
     scheme: 'https://',
     contentLength: encrypted.payload.byteLength,
-    filename: file.name,
-    mimeType: attachment.mimeType,
+    filename: prepared.name,
   };
+  return { remote, mimeType };
+}
+
+/**
+ * For chat DMs — sends the RemoteAttachment directly via the official
+ * codec, no JSON wrapping. Caller does `dm.send(remoteAttachmentCodec.encode(remote))`.
+ */
+export async function encryptAndUploadFileRaw(
+  file: File,
+): Promise<{ remote: RemoteAttachment; mimeType: string }> {
+  return uploadAndBuild(file);
+}
+
+export function serialiseRemoteAttachment(
+  ra: RemoteAttachment,
+  mimeType: string,
+): SerialisedRemoteAttachment {
+  return {
+    url: ra.url,
+    contentDigest: ra.contentDigest,
+    salt: bytesToBase64(ra.salt),
+    nonce: bytesToBase64(ra.nonce),
+    secret: bytesToBase64(ra.secret),
+    scheme: ra.scheme,
+    contentLength: ra.contentLength,
+    filename: ra.filename,
+    mimeType,
+  };
+}
+
+/**
+ * For payment requests — returns JSON-safe metadata embedded inside the
+ * PaymentRequest payload.
+ */
+export async function encryptAndUploadFile(
+  file: File,
+): Promise<SerialisedRemoteAttachment> {
+  const { remote, mimeType } = await uploadAndBuild(file);
+  return serialiseRemoteAttachment(remote, mimeType);
 }
 
 /**
@@ -164,17 +193,34 @@ export async function loadRemoteAttachment(
     contentLength: meta.contentLength,
     filename: meta.filename,
   };
+  return decryptRemote(remote, meta.mimeType);
+}
+
+/**
+ * For chat-side RemoteAttachments that arrive directly via the codec
+ * (no SerialisedRemoteAttachment wrapper).
+ */
+export async function loadRemoteAttachmentRaw(
+  remote: RemoteAttachment,
+  fallbackMime = 'application/octet-stream',
+): Promise<{ url: string; mimeType: string; filename: string }> {
+  return decryptRemote(remote, fallbackMime);
+}
+
+async function decryptRemote(
+  remote: RemoteAttachment,
+  fallbackMime: string,
+): Promise<{ url: string; mimeType: string; filename: string }> {
   const decoded = (await RemoteAttachmentCodec.load(
     remote,
     SHIM_REGISTRY as unknown as Parameters<typeof RemoteAttachmentCodec.load>[1],
   )) as Attachment;
-  const blob = new Blob([decoded.data as BlobPart], {
-    type: decoded.mimeType || meta.mimeType,
-  });
+  const mimeType = decoded.mimeType || fallbackMime;
+  const blob = new Blob([decoded.data as BlobPart], { type: mimeType });
   return {
     url: URL.createObjectURL(blob),
-    mimeType: decoded.mimeType || meta.mimeType,
-    filename: decoded.filename || meta.filename,
+    mimeType,
+    filename: decoded.filename || remote.filename,
   };
 }
 
