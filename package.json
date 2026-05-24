@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "predev": "node scripts/generate-gifs.mjs",
+    "prebuild": "node scripts/generate-gifs.mjs",
+    "gen:gifs": "node scripts/generate-gifs.mjs"
   },
   "dependencies": {
     "@aboutcircles/miniapp-sdk": "^0.1.31",
