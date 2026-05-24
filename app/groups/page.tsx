@@ -1,6 +1,13 @@
 'use client';
 
-import { IconLoader2, IconMessage, IconMessages, IconPlugConnected, IconPlus, IconUsers } from '@tabler/icons-react';
+import {
+  IconLoader2,
+  IconMessage,
+  IconMessages,
+  IconPlugConnected,
+  IconPlus,
+  IconUsers,
+} from '@tabler/icons-react';
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 
@@ -27,7 +34,6 @@ export default function GroupsPage() {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
 
-  // Refresh from store when sortedConversations changes.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -48,7 +54,6 @@ export default function GroupsPage() {
         return;
       }
       if (!client || status !== 'ready') return;
-      // Store not yet populated — fall back to direct fetch.
       setLoading(true);
       try {
         const all = await listAllConversations(client);
@@ -59,9 +64,7 @@ export default function GroupsPage() {
         if (!cancelled) setLoading(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sortedConversations, client, status, tick]);
 
@@ -144,7 +147,11 @@ export default function GroupsPage() {
             <Button size="sm" onClick={handleNewDm} disabled={creating || !newDmAddr.trim()}>
               {creating ? <IconLoader2 className="size-4 animate-spin" /> : 'Open'}
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => { setNewDmOpen(false); setNewDmAddr(''); setCreateError(''); }}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => { setNewDmOpen(false); setNewDmAddr(''); setCreateError(''); }}
+            >
               Cancel
             </Button>
           </div>
@@ -154,7 +161,7 @@ export default function GroupsPage() {
 
       {loading ? (
         <div className="flex flex-col gap-2">
-          {[0, 1, 2].map((i) => <Skeleton key={i} className="h-14 w-full rounded-md" />)}
+          {[0, 1, 2].map((i) => <Skeleton key={i} className="h-16 w-full rounded-md" />)}
         </div>
       ) : items.length === 0 ? (
         <Card className="flex flex-col items-center gap-2 px-6 py-10 text-center">
@@ -166,35 +173,91 @@ export default function GroupsPage() {
         <ul className="flex flex-col gap-2">
           {items.map((item) => (
             <li key={item.conversationId}>
-              <Link
-                href={item.isDm ? `/dms/${item.conversationId}` : `/groups/${item.conversationId}`}
-                className="block transition-opacity hover:opacity-80"
-              >
-                <Card className="flex items-center gap-3 px-3 py-3">
-                  <span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground">
-                    {item.isDm
-                      ? <IconMessage className="size-4" />
-                      : <IconUsers className="size-4" />}
-                  </span>
-                  <div className="flex min-w-0 flex-1 flex-col leading-tight">
-                    <span className="truncate font-mono text-sm font-semibold">
-                      {item.isDm ? shortenAddress(item.peer) : (item.name ?? item.peer)}
-                    </span>
-                    {item.lastPreview && (
-                      <span className="truncate text-xs text-muted-foreground">{item.lastPreview}</span>
-                    )}
-                  </div>
-                  {item.lastTs > 0 && (
-                    <span className="shrink-0 text-[10px] text-muted-foreground">
-                      {new Date(item.lastTs * 1000).toLocaleDateString()}
-                    </span>
-                  )}
-                </Card>
-              </Link>
+              <ConversationRow item={item} />
             </li>
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+// ── Conversation row ──────────────────────────────────────────────────────────
+
+type CirclesProfile = { name: string; avatarUrl?: string };
+
+function ConversationRow({ item }: { item: DmSummary }) {
+  const [profile, setProfile] = useState<CirclesProfile | null>(null);
+
+  useEffect(() => {
+    if (!item.isDm || !item.peer) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { Sdk } = await import('@aboutcircles/sdk');
+        const sdk = new Sdk();
+        const view = await sdk.rpc.profile.getProfileView(item.peer as `0x${string}`);
+        if (cancelled) return;
+        if (!view?.avatarInfo?.cidV0) {
+          setProfile({ name: shortenAddress(item.peer) });
+          return;
+        }
+        const full = await sdk.rpc.profile.getProfileByCid(view.avatarInfo.cidV0);
+        if (!cancelled) {
+          setProfile({
+            name: full?.name || shortenAddress(item.peer),
+            avatarUrl: full?.previewImageUrl || full?.imageUrl,
+          });
+        }
+      } catch {
+        if (!cancelled) setProfile({ name: shortenAddress(item.peer) });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [item.peer, item.isDm]);
+
+  const displayName = item.isDm
+    ? (profile?.name ?? shortenAddress(item.peer))
+    : (item.name ?? item.peer);
+
+  return (
+    <Link
+      href={item.isDm ? `/dms/${item.conversationId}` : `/groups/${item.conversationId}`}
+      className="block"
+    >
+      <Card className="flex-row items-center gap-3 px-3 py-3 transition-colors hover:bg-accent/50">
+        <AvatarCircle
+          url={item.isDm ? profile?.avatarUrl : undefined}
+          name={displayName}
+          isDm={item.isDm}
+        />
+        <div className="flex min-w-0 flex-1 flex-col leading-tight">
+          <span className="truncate text-sm font-semibold">{displayName}</span>
+          {item.lastPreview && (
+            <span className="truncate text-xs text-muted-foreground">{item.lastPreview}</span>
+          )}
+        </div>
+        {item.lastTs > 0 && (
+          <span className="shrink-0 text-[10px] text-muted-foreground">
+            {new Date(item.lastTs * 1000).toLocaleDateString()}
+          </span>
+        )}
+      </Card>
+    </Link>
+  );
+}
+
+function AvatarCircle({ url, name, isDm }: { url?: string; name: string; isDm: boolean }) {
+  if (url) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img src={url} alt={name} className="size-10 shrink-0 rounded-full object-cover" />
+    );
+  }
+  const letter = name?.[0]?.toUpperCase();
+  return (
+    <div className="grid size-10 shrink-0 place-items-center rounded-full bg-muted text-sm font-semibold text-muted-foreground">
+      {isDm ? (letter || <IconMessage className="size-4" />) : <IconUsers className="size-4" />}
     </div>
   );
 }
