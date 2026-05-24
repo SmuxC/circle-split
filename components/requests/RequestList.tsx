@@ -9,7 +9,7 @@ import {
   IconReceipt,
   IconReceiptOff,
 } from '@tabler/icons-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type MouseEvent } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -138,6 +138,32 @@ export function RequestList({
   );
 }
 
+function TxLink({ hash }: { hash: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleClick = (e: MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    const url = `https://gnosisscan.io/tx/${hash}`;
+    const w = window.open(url, '_blank', 'noopener,noreferrer');
+    if (!w) {
+      navigator.clipboard.writeText(url).catch(() => {});
+      setCopied(true);
+      setTimeout(() => setCopied(false), 3000);
+    }
+  };
+
+  return (
+    <a
+      href={`https://gnosisscan.io/tx/${hash}`}
+      onClick={handleClick}
+      rel="noopener noreferrer"
+      className="underline-offset-2 hover:underline"
+    >
+      {copied ? 'Copied!' : '↗'}
+    </a>
+  );
+}
+
 function RequestRow({ record: r }: { record: PaymentRequestRecord }) {
   const incoming = r.direction === 'incoming';
   const counterparty = incoming ? r.requester : r.payer;
@@ -180,15 +206,10 @@ function RequestRow({ record: r }: { record: PaymentRequestRecord }) {
           </span>
         )}
         {r.paidTxHash ? (
-          <a
-            href={`https://gnosisscan.io/tx/${r.paidTxHash}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1 text-xs text-emerald-600 underline-offset-2 hover:underline"
-          >
+          <span className="flex items-center gap-1 text-xs text-emerald-600">
             <IconCircleCheck className="size-3" />
-            Paid ↗
-          </a>
+            Paid <TxLink hash={r.paidTxHash} />
+          </span>
         ) : r.direction === 'incoming' ? (
           <span className="text-[10px] text-muted-foreground">Pending</span>
         ) : null}

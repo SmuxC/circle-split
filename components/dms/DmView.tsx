@@ -563,18 +563,43 @@ function CrcTransferBubble({
       </div>
       {payload.note && <p className="text-xs text-muted-foreground">{payload.note}</p>}
       {resolvedHash ? (
-        <a
-          href={`https://gnosisscan.io/tx/${resolvedHash}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-xs text-primary underline-offset-2 hover:underline"
-        >
-          View transaction ↗
-        </a>
+        <TxLink hash={resolvedHash} />
       ) : (
         <span className="text-xs text-muted-foreground">Looking up transaction…</span>
       )}
     </Card>
+  );
+}
+
+// Opens gnosisscan in a new tab; if the popup is blocked (sandboxed iframe)
+// copies the URL to clipboard instead so the user can open it manually.
+function TxLink({ hash, label = 'View transaction ↗', className }: {
+  hash: string;
+  label?: string;
+  className?: string;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    const url = `https://gnosisscan.io/tx/${hash}`;
+    const w = window.open(url, '_blank', 'noopener,noreferrer');
+    if (!w) {
+      navigator.clipboard.writeText(url).catch(() => {});
+      setCopied(true);
+      setTimeout(() => setCopied(false), 3000);
+    }
+  };
+
+  return (
+    <a
+      href={`https://gnosisscan.io/tx/${hash}`}
+      onClick={handleClick}
+      rel="noopener noreferrer"
+      className={className ?? 'text-xs text-primary underline-offset-2 hover:underline'}
+    >
+      {copied ? 'Link copied!' : label}
+    </a>
   );
 }
 
@@ -628,14 +653,7 @@ function PaymentRequestCard({
           <IconCircleCheck className="size-3" />
           <span>Paid</span>
           {message.paidTxHash && (
-            <a
-              href={`https://gnosisscan.io/tx/${message.paidTxHash}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline-offset-2 hover:underline"
-            >
-              ↗
-            </a>
+            <TxLink hash={message.paidTxHash} label="↗" className="underline-offset-2 hover:underline" />
           )}
         </div>
       ) : onPay ? (
