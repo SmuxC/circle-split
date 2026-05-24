@@ -46,23 +46,47 @@ export async function encryptAndUploadFile(
     new AttachmentCodec(),
   );
 
-  // Dynamic import — `@vercel/blob/client` references browser-only globals
-  // (fetch, FormData) and must not land in a server bundle.
-  const { upload } = await import('@vercel/blob/client');
+  // Direct POST to our own endpoint. The endpoint uses server-side `put()`
+  // which avoids the client-token + cross-origin PUT dance that was
+  // silently hanging behind 10 retries inside the Circles iframe.
   const pathname = `xmtp-attachments/${crypto.randomUUID()}-${safeName(file.name)}`;
-  // Wrap in a Blob so the SDK's PutBody type accepts the payload (it doesn't
-  // accept raw Uint8Array even though the underlying fetch would).
-  const ciphertext = new Blob([encrypted.payload as BlobPart], {
-    type: 'application/octet-stream',
-  });
-  const blob = await upload(pathname, ciphertext, {
-    access: 'public',
-    handleUploadUrl: UPLOAD_ENDPOINT,
-    contentType: 'application/octet-stream',
-  });
+  // 60s ceiling — well past a healthy upload, short enough that genuine
+  // failure surfaces instead of leaving the submit button spinning forever.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60_000);
+
+  let res: Response;
+  try {
+    res = await fetch(UPLOAD_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/octet-stream',
+        'x-pathname': pathname,
+      },
+      // `encrypted.payload` is a Uint8Array. `BodyInit` accepts it directly
+      // in browsers, but TS typings via fetch lib lag; cast for now.
+      body: encrypted.payload as BodyInit,
+      signal: controller.signal,
+    });
+  } catch (e) {
+    clearTimeout(timeout);
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      throw new Error('Upload timed out after 60s.');
+    }
+    throw new Error(
+      `Upload network error: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  clearTimeout(timeout);
+
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error ?? `Upload failed: HTTP ${res.status}`);
+  }
+  const { url } = (await res.json()) as { url: string };
 
   return {
-    url: blob.url,
+    url,
     contentDigest: encrypted.digest,
     salt: bytesToBase64(encrypted.salt),
     nonce: bytesToBase64(encrypted.nonce),
