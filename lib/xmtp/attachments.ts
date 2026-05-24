@@ -5,8 +5,27 @@ import {
   type RemoteAttachment,
 } from '@xmtp/content-type-remote-attachment';
 import type { Client } from '@xmtp/browser-sdk';
+import type { ContentTypeId } from '@xmtp/content-type-primitives';
 
 import type { SerialisedRemoteAttachment } from './codecs';
+
+// RemoteAttachmentCodec.load expects a registry with `codecFor(type)`.
+// Browser SDK Client exposes `getCodec(type)` — different method name, so
+// passing the client directly throws "codecRegistry.codecFor is not a
+// function". RemoteAttachments in our pipeline always wrap an Attachment,
+// so a single-codec shim is enough.
+const SHIM_REGISTRY = {
+  codecFor: (type: ContentTypeId) => {
+    const codec = new AttachmentCodec();
+    if (
+      type.authorityId === codec.contentType.authorityId &&
+      type.typeId === codec.contentType.typeId
+    ) {
+      return codec;
+    }
+    return undefined;
+  },
+};
 
 const UPLOAD_ENDPOINT = '/api/blob-upload';
 const FETCH_ENDPOINT = '/api/blob-fetch';
@@ -132,7 +151,7 @@ export async function encryptAndUploadFile(
  * usable by <img src>. Caller is responsible for revoking the URL.
  */
 export async function loadRemoteAttachment(
-  client: Client,
+  _client: Client,
   meta: SerialisedRemoteAttachment,
 ): Promise<{ url: string; mimeType: string; filename: string }> {
   const remote: RemoteAttachment = {
@@ -147,7 +166,7 @@ export async function loadRemoteAttachment(
   };
   const decoded = (await RemoteAttachmentCodec.load(
     remote,
-    client as unknown as Parameters<typeof RemoteAttachmentCodec.load>[1],
+    SHIM_REGISTRY as unknown as Parameters<typeof RemoteAttachmentCodec.load>[1],
   )) as Attachment;
   const blob = new Blob([decoded.data as BlobPart], {
     type: decoded.mimeType || meta.mimeType,
