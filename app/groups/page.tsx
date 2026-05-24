@@ -29,10 +29,19 @@ export default function GroupsPage() {
 
   const [items, setItems] = useState<DmSummary[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // New DM state
   const [newDmOpen, setNewDmOpen] = useState(false);
   const [newDmAddr, setNewDmAddr] = useState('');
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
+
+  // New Group state
+  const [newGroupOpen, setNewGroupOpen] = useState(false);
+  const [groupName, setGroupName] = useState('');
+  const [groupAddrs, setGroupAddrs] = useState(['']);
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const [groupCreateError, setGroupCreateError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -92,6 +101,36 @@ export default function GroupsPage() {
     }
   }, [client, newDmAddr]);
 
+  const handleNewGroup = useCallback(async () => {
+    if (!client) return;
+    const valid = groupAddrs
+      .map((a) => a.trim().toLowerCase())
+      .filter((a) => /^0x[a-f0-9]{40}$/.test(a));
+    if (valid.length === 0) {
+      setGroupCreateError('Add at least one valid 0x address.');
+      return;
+    }
+    setCreatingGroup(true);
+    setGroupCreateError('');
+    try {
+      const identifiers = valid.map((addr) => ({ identifier: addr, identifierKind: 0 as never }));
+      const group = await (client.conversations as unknown as {
+        createGroupWithIdentifiers: (
+          ids: unknown[],
+          opts?: { groupName?: string },
+        ) => Promise<{ id: string }>;
+      }).createGroupWithIdentifiers(identifiers, groupName.trim() ? { groupName: groupName.trim() } : undefined);
+      setNewGroupOpen(false);
+      setGroupAddrs(['']);
+      setGroupName('');
+      window.location.href = `/groups/${group.id}`;
+    } catch (e) {
+      setGroupCreateError(e instanceof Error ? e.message : 'Could not create group.');
+    } finally {
+      setCreatingGroup(false);
+    }
+  }, [client, groupAddrs, groupName]);
+
   if (!isConnected) {
     return (
       <div className="mx-auto flex max-w-4xl flex-col gap-6">
@@ -127,10 +166,24 @@ export default function GroupsPage() {
     <div className="mx-auto flex max-w-4xl flex-col gap-6">
       <div className="flex items-center justify-between">
         <PageHeader />
-        <Button size="sm" variant="outline" onClick={() => setNewDmOpen(true)}>
-          <IconPlus className="size-4" />
-          New DM
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => { setNewDmOpen(true); setNewGroupOpen(false); }}
+          >
+            <IconPlus className="size-4" />
+            New DM
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => { setNewGroupOpen(true); setNewDmOpen(false); }}
+          >
+            <IconPlus className="size-4" />
+            New Group
+          </Button>
+        </div>
       </div>
 
       {newDmOpen && (
@@ -156,6 +209,63 @@ export default function GroupsPage() {
             </Button>
           </div>
           {createError && <p className="text-xs text-destructive">{createError}</p>}
+        </Card>
+      )}
+
+      {newGroupOpen && (
+        <Card className="flex flex-col gap-3 px-4 py-4">
+          <p className="text-sm font-medium">Create a group chat</p>
+          <Input
+            placeholder="Group name (optional)"
+            value={groupName}
+            onChange={(e) => setGroupName(e.target.value)}
+            className="h-9"
+          />
+          <div className="flex flex-col gap-2">
+            {groupAddrs.map((addr, i) => (
+              <div key={i} className="flex gap-2">
+                <Input
+                  placeholder="0x… Ethereum address"
+                  value={addr}
+                  onChange={(e) => {
+                    const next = [...groupAddrs];
+                    next[i] = e.target.value;
+                    setGroupAddrs(next);
+                  }}
+                  className="h-9 flex-1"
+                />
+                {groupAddrs.length > 1 && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setGroupAddrs(groupAddrs.filter((_, j) => j !== i))}
+                  >
+                    ✕
+                  </Button>
+                )}
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() => setGroupAddrs([...groupAddrs, ''])}
+              className="self-start text-xs text-muted-foreground hover:text-foreground"
+            >
+              + Add member
+            </button>
+          </div>
+          {groupCreateError && <p className="text-xs text-destructive">{groupCreateError}</p>}
+          <div className="flex justify-end gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => { setNewGroupOpen(false); setGroupAddrs(['']); setGroupName(''); setGroupCreateError(''); }}
+            >
+              Cancel
+            </Button>
+            <Button size="sm" onClick={handleNewGroup} disabled={creatingGroup}>
+              {creatingGroup ? <IconLoader2 className="size-4 animate-spin" /> : 'Create Group'}
+            </Button>
+          </div>
         </Card>
       )}
 

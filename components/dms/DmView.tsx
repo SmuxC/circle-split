@@ -38,6 +38,7 @@ export function DmView({ conversationId }: { conversationId: string }) {
   const { address } = useWallet();
   const [dm, setDm] = useState<Dm | null>(null);
   const [peer, setPeer] = useState<string>('');
+  const [groupName, setGroupName] = useState<string | null>(null);
   const [messages, setMessages] = useState<DmMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +72,9 @@ export function DmView({ conversationId }: { conversationId: string }) {
         }
         const { peer: p, messages: m } = await fetchDmMessages(d, client);
         if (cancelled) return;
+        // Detect group conversation by name property (groups always have one; DMs don't).
+        const rawName = (d as unknown as { name?: string }).name;
+        setGroupName(rawName ?? null);
         setDm(d);
         setPeer(p);
         setMessages(m);
@@ -179,9 +183,11 @@ export function DmView({ conversationId }: { conversationId: string }) {
     <div className="flex h-[calc(100vh-12rem)] flex-col gap-3">
       <Card className="flex items-center gap-3 px-3 py-2">
         <div className="flex flex-col leading-tight">
-          <span className="text-xs uppercase tracking-wide text-muted-foreground">DM</span>
-          <span className="font-mono text-sm font-semibold" title={peer}>
-            {peer ? shortenAddress(peer) : '…'}
+          <span className="text-xs uppercase tracking-wide text-muted-foreground">
+            {groupName ? 'Group' : 'DM'}
+          </span>
+          <span className="text-sm font-semibold" title={groupName ?? peer}>
+            {groupName ?? (peer ? shortenAddress(peer) : '…')}
           </span>
         </div>
       </Card>
@@ -257,19 +263,21 @@ export function DmView({ conversationId }: { conversationId: string }) {
             </button>
           }
         />
-        <button
-          type="button"
-          aria-label="Send CRC"
-          onClick={() => { setCrcOpen((o) => !o); setPayReq(null); }}
-          className={cn(
-            'grid size-9 shrink-0 place-items-center rounded-md transition-colors',
-            crcOpen
-              ? 'bg-accent text-foreground'
-              : 'text-muted-foreground hover:bg-accent',
-          )}
-        >
-          <IconCoins className="size-5" />
-        </button>
+        {!groupName && (
+          <button
+            type="button"
+            aria-label="Send CRC"
+            onClick={() => { setCrcOpen((o) => !o); setPayReq(null); }}
+            className={cn(
+              'grid size-9 shrink-0 place-items-center rounded-md transition-colors',
+              crcOpen
+                ? 'bg-accent text-foreground'
+                : 'text-muted-foreground hover:bg-accent',
+            )}
+          >
+            <IconCoins className="size-5" />
+          </button>
+        )}
         <Input
           value={text}
           onChange={(e) => setText(e.target.value)}
