@@ -14,7 +14,7 @@ import {
 } from '@tabler/icons-react';
 import type { Dm } from '@xmtp/browser-sdk';
 import Image from 'next/image';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -53,6 +53,12 @@ export function DmView({ conversationId }: { conversationId: string }) {
   const [sending, setSending] = useState(false);
   const [crcOpen, setCrcOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const hasLoadedOnce = useRef(false);
+
+  // Reset first-load flag when navigating between conversations.
+  useEffect(() => {
+    hasLoadedOnce.current = false;
+  }, [conversationId]);
 
   // Map of messageId → txHash for CRC transfers sent this session.
   const [crcTxHashes, setCrcTxHashes] = useState<Map<string, string>>(new Map());
@@ -76,8 +82,9 @@ export function DmView({ conversationId }: { conversationId: string }) {
   useEffect(() => {
     if (!client) return;
     let cancelled = false;
+    const isFirst = !hasLoadedOnce.current;
     (async () => {
-      setLoading(true);
+      if (isFirst) setLoading(true);
       setError(null);
       try {
         const d = await getDm(client, conversationId);
@@ -87,12 +94,12 @@ export function DmView({ conversationId }: { conversationId: string }) {
         }
         const { peer: p, messages: m } = await fetchDmMessages(d, client);
         if (cancelled) return;
-        // Detect group conversation by name property (groups always have one; DMs don't).
         const rawName = (d as unknown as { name?: string }).name;
         setGroupName(rawName ?? null);
         setDm(d);
         setPeer(p);
         setMessages(m);
+        hasLoadedOnce.current = true;
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -115,12 +122,21 @@ export function DmView({ conversationId }: { conversationId: string }) {
     return () => setChat(null);
   }, [peer, groupName, loading, setChat]);
 
+  const silentRefresh = useCallback(async () => {
+    if (!dm || !client) return;
+    try {
+      const { messages: m } = await fetchDmMessages(dm, client);
+      setMessages(m);
+    } catch {}
+  }, [dm, client]);
+
   const handleSendText = async () => {
     if (!dm || !text.trim()) return;
     setSending(true);
     try {
       await sendDmText(dm, text);
       setText('');
+      void silentRefresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -134,6 +150,7 @@ export function DmView({ conversationId }: { conversationId: string }) {
     try {
       const origin = typeof window !== 'undefined' ? window.location.origin : '';
       await sendDmGif(dm, origin + gif.src);
+      void silentRefresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -155,6 +172,7 @@ export function DmView({ conversationId }: { conversationId: string }) {
       });
       setCrcTxHashes((prev) => new Map(prev).set(messageId, hash));
       setCrcOpen(false);
+      void silentRefresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -186,6 +204,7 @@ export function DmView({ conversationId }: { conversationId: string }) {
         messageId,
       });
       setPayReq(null);
+      void silentRefresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -212,6 +231,7 @@ export function DmView({ conversationId }: { conversationId: string }) {
         txHash: hash,
       });
       setDebtPay(null);
+      void silentRefresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
