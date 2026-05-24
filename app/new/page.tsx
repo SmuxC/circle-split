@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 
 import {
@@ -22,6 +22,7 @@ import { useXmtp } from '@/components/xmtp/XmtpProvider';
 import { useWallet } from '@/hooks/use-wallet';
 import { cn, shortenAddress } from '@/lib/utils';
 import { computeShares, sendBillSplit, type SplitType } from '@/lib/xmtp/bills';
+import { listAllConversations } from '@/lib/xmtp/dms';
 import { useInboxStore } from '@/lib/xmtp/store';
 
 // ── Hardcoded demo transactions ───────────────────────────────────────────────
@@ -36,9 +37,11 @@ const MOCK_TRANSACTIONS = [
 
 // ── Split page ────────────────────────────────────────────────────────────────
 
+type ConvItem = { id: string; isDm: boolean; displayName: string };
+
 function BillSplitPage() {
   const router = useRouter();
-  const { client, status, error: xmtpError, connect } = useXmtp();
+  const { client, status, error: xmtpError, connect, tick } = useXmtp();
   const { address, isConnected } = useWallet();
   const sortedConversations = useInboxStore((s) => s.sortedConversations);
   const metadata = useInboxStore((s) => s.metadata);
@@ -49,10 +52,95 @@ function BillSplitPage() {
   const [splitAmount, setSplitAmount] = useState('');
   const [splitCurrency, setSplitCurrency] = useState('EUR');
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
+  const [selectedIsDm, setSelectedIsDm] = useState(false);
   const [splitType, setSplitType] = useState<SplitType>('equal');
   const [manualAmounts, setManualAmounts] = useState<Map<string, string>>(new Map());
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+
+  // Conversation list — synchronous from store via useMemo; async fetch when store empty.
+  const storeConvItems = useMemo(
+    () =>
+      sortedConversations.map((c) => {
+        const meta = metadata.get(c.id);
+        const raw = meta?.name ?? c.name ?? c.id;
+        return { id: c.id, isDm: c.isDm, displayName: c.isDm ? shortenAddress(raw) : raw };
+      }),
+    [sortedConversations, metadata],
+  );
+
+  const [fetchedConvItems, setFetchedConvItems] = useState<ConvItem[]>([]);
+  const [loadingConvs, setLoadingConvs] = useState(false);
+
+  useEffect(() => {
+    if (storeConvItems.length > 0) return;
+    if (!client || status !== 'ready') return;
+    let cancelled = false;
+    (async () => {
+      if (cancelled) return;
+      setLoadingConvs(true);
+      try {
+        const all = await listAllConversations(client);
+        if (!cancelled) {
+          setFetchedConvItems(
+            all.map((c) => ({
+              id: c.conversationId,
+              isDm: c.isDm,
+              displayName: c.isDm ? shortenAddress(c.peer) : (c.name ?? c.peer),
+            })),
+          );
+        }
+      } catch {
+        if (!cancelled) setFetchedConvItems([]);
+      } finally {
+        if (!cancelled) setLoadingConvs(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [storeConvItems.length, client, status, tick]);
+
+  const convItems = storeConvItems.length > 0 ? storeConvItems : fetchedConvItems;
+
+  // Member addresses — synchronous from store; async fetch fallback when store has no members.
+  const storeMemberAddrs = useMemo(() => {
+    if (!selectedConvId) return null;
+    const stored = storeMembers.get(selectedConvId);
+    if (!stored || stored.size === 0) return null;
+    return [...stored.values()]
+      .map((m) => m.accountIdentifiers.find((id) => id.identifierKind === 0)?.identifier)
+      .filter(Boolean) as string[];
+  }, [selectedConvId, storeMembers]);
+
+  // { convId, addrs } — keyed so stale results from a previous selection are ignored.
+  const [fetchedMembersFor, setFetchedMembersFor] = useState<{ convId: string; addrs: string[] } | null>(null);
+
+  useEffect(() => {
+    if (storeMemberAddrs !== null || !selectedConvId || !client) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const conv = await client.conversations.getConversationById(selectedConvId);
+        if (!conv || cancelled) return;
+        const members = await (conv as unknown as {
+          members: () => Promise<Array<{ inboxId: string; accountIdentifiers: { identifier: string; identifierKind: number }[] }>>;
+        }).members();
+        if (!cancelled) {
+          setFetchedMembersFor({
+            convId: selectedConvId,
+            addrs: members
+              .map((m) => m.accountIdentifiers.find((id) => id.identifierKind === 0)?.identifier)
+              .filter(Boolean) as string[],
+          });
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [selectedConvId, client, storeMemberAddrs]);
+
+  const memberAddresses = useMemo(
+    () => storeMemberAddrs ?? (fetchedMembersFor?.convId === selectedConvId ? fetchedMembersFor.addrs : []),
+    [storeMemberAddrs, fetchedMembersFor, selectedConvId],
+  );
 
   const selectedTx = MOCK_TRANSACTIONS.find((t) => t.id === selectedTxId) ?? null;
 
@@ -62,21 +150,6 @@ function BillSplitPage() {
     setSplitCurrency(tx.currency);
     setDescription(tx.merchant);
   };
-
-  const selectedConv = selectedConvId
-    ? sortedConversations.find((c) => c.id === selectedConvId) ?? null
-    : null;
-
-  const convMembersMap = selectedConvId ? storeMembers.get(selectedConvId) : undefined;
-  const memberAddresses = useMemo(
-    () =>
-      convMembersMap
-        ? [...convMembersMap.values()]
-            .map((m) => m.accountIdentifiers.find((id) => id.identifierKind === 0)?.identifier)
-            .filter(Boolean) as string[]
-        : [],
-    [convMembersMap],
-  );
 
   const shares = useMemo(() => {
     if (!splitAmount || !address || memberAddresses.length === 0) return [];
@@ -111,8 +184,7 @@ function BillSplitPage() {
         creator: address,
         shares,
       });
-      const isGroup = !selectedConv?.isDm;
-      router.push(isGroup ? `/groups/${selectedConvId}` : `/dms/${selectedConvId}`);
+      router.push(selectedIsDm ? `/dms/${selectedConvId}` : `/groups/${selectedConvId}`);
     } catch (e) {
       setSendError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -219,37 +291,39 @@ function BillSplitPage() {
         <div className="px-1">
           <span className="text-sm font-medium text-muted-foreground">Send to</span>
         </div>
-        {sortedConversations.length === 0 ? (
+        {loadingConvs ? (
+          <Card className="flex items-center justify-center gap-2 px-6 py-6">
+            <IconLoader2 className="size-4 animate-spin text-muted-foreground" />
+            <span className="text-sm text-muted-foreground">Loading conversations…</span>
+          </Card>
+        ) : convItems.length === 0 ? (
           <Card className="flex flex-col items-center gap-2 px-6 py-6 text-center">
             <IconUsers className="size-6 text-muted-foreground" />
             <p className="text-sm text-muted-foreground">No conversations yet. Start a DM or group first.</p>
           </Card>
         ) : (
           <div className="flex flex-col gap-1 rounded-xl border bg-card">
-            {sortedConversations.map((conv) => {
-              const meta = metadata.get(conv.id);
-              const name = meta?.name ?? conv.name ?? conv.id;
+            {convItems.map((conv) => {
               const isSelected = selectedConvId === conv.id;
               return (
                 <button
                   key={conv.id}
                   type="button"
-                  onClick={() => setSelectedConvId(conv.id)}
+                  onClick={() => {
+                    setSelectedConvId(conv.id);
+                    setSelectedIsDm(conv.isDm);
+                  }}
                   className={cn(
                     'flex items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors',
                     isSelected ? 'bg-accent' : 'hover:bg-accent/50',
                   )}
                 >
                   <span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">
-                    {conv.isDm ? (name[0]?.toUpperCase() ?? '?') : <IconUsers className="size-4" />}
+                    {conv.isDm ? (conv.displayName[0]?.toUpperCase() ?? '?') : <IconUsers className="size-4" />}
                   </span>
                   <div className="flex flex-1 flex-col leading-tight">
-                    <span className="text-sm font-semibold">
-                      {conv.isDm ? shortenAddress(name) : name}
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      {conv.isDm ? 'DM' : 'Group'}
-                    </span>
+                    <span className="text-sm font-semibold">{conv.displayName}</span>
+                    <span className="text-xs text-muted-foreground">{conv.isDm ? 'DM' : 'Group'}</span>
                   </div>
                   {isSelected && (
                     <span className="text-xs font-semibold text-foreground">✓</span>
