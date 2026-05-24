@@ -210,6 +210,38 @@ export function DmView({ conversationId }: { conversationId: string }) {
     }
   };
 
+  const [payingAllDebts, setPayingAllDebts] = useState(false);
+
+  const handlePayAllDebts = async () => {
+    if (!dm || !address) return;
+    const unpaid = debts.filter((d) => d.direction === 'i-owe' && !d.paid);
+    if (unpaid.length === 0) return;
+    setPayingAllDebts(true);
+    setError(null);
+    try {
+      for (const debt of unpaid) {
+        const { hash, messageId } = await callCrcTransfer({
+          source: address,
+          sink: debt.counterparty,
+          amountCRC: debt.amount.toString(),
+          note: `Bill: ${debt.description}`,
+          peerDisplay: shortenAddress(debt.counterparty),
+          conversation: dm as unknown as Parameters<typeof callCrcTransfer>[0]['conversation'],
+        });
+        setCrcTxHashes((prev) => new Map(prev).set(messageId, hash));
+        await sendBillSplitPayment(dm as unknown as { send: (c: unknown) => Promise<unknown> }, {
+          billId: debt.billId,
+          payerAddress: address,
+          txHash: hash,
+        });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPayingAllDebts(false);
+    }
+  };
+
   if (status !== 'ready') {
     return (
       <Card className="flex flex-col items-center gap-2 px-6 py-10 text-center">
@@ -238,7 +270,12 @@ export function DmView({ conversationId }: { conversationId: string }) {
       )}
 
       {groupName && debts.length > 0 && (
-        <DebtOverview debts={debts} onPay={setDebtPay} />
+        <DebtOverview
+          debts={debts}
+          onPay={setDebtPay}
+          onPayAll={handlePayAllDebts}
+          payingAll={payingAllDebts}
+        />
       )}
 
       <div
@@ -795,7 +832,17 @@ function BillSplitPaymentBubble({ payload, mine }: { payload: BillSplitPayment; 
 
 // ── Debt Overview ─────────────────────────────────────────────────────────────
 
-function DebtOverview({ debts, onPay }: { debts: DebtEntry[]; onPay: (d: DebtEntry) => void }) {
+function DebtOverview({
+  debts,
+  onPay,
+  onPayAll,
+  payingAll = false,
+}: {
+  debts: DebtEntry[];
+  onPay: (d: DebtEntry) => void;
+  onPayAll?: () => void;
+  payingAll?: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
 
   const iOwe = debts.filter((d) => d.direction === 'i-owe' && !d.paid);
@@ -805,12 +852,12 @@ function DebtOverview({ debts, onPay }: { debts: DebtEntry[]; onPay: (d: DebtEnt
 
   return (
     <Card className="flex flex-col gap-2 px-3 py-3">
-      <button
-        type="button"
-        onClick={() => setExpanded((e) => !e)}
-        className="flex items-center justify-between"
-      >
-        <div className="flex items-center gap-2">
+      <div className="flex items-center justify-between">
+        <button
+          type="button"
+          onClick={() => setExpanded((e) => !e)}
+          className="flex flex-1 items-center gap-2"
+        >
           <IconUsersGroup className="size-4 text-muted-foreground" />
           <span className="text-sm font-semibold">Debts</span>
           {pendingCount > 0 && (
@@ -818,9 +865,24 @@ function DebtOverview({ debts, onPay }: { debts: DebtEntry[]; onPay: (d: DebtEnt
               {pendingCount} pending
             </span>
           )}
-        </div>
-        <span className="text-xs text-muted-foreground">{expanded ? '▲' : '▼'}</span>
-      </button>
+          <span className="ml-auto text-xs text-muted-foreground">{expanded ? '▲' : '▼'}</span>
+        </button>
+        {onPayAll && iOwe.length > 0 && (
+          <Button
+            type="button"
+            size="sm"
+            onClick={onPayAll}
+            disabled={payingAll}
+            className="ml-2 h-7 shrink-0 px-2 text-[10px]"
+          >
+            {payingAll ? (
+              <IconLoader2 className="size-3 animate-spin" />
+            ) : (
+              `Pay all (${iOwe.length})`
+            )}
+          </Button>
+        )}
+      </div>
 
       {expanded && (
         <div className="flex flex-col gap-3 border-t pt-2">

@@ -1,3 +1,4 @@
+import { DebtList } from '@/components/bills/DebtList';
 import { RequestList } from '@/components/requests/RequestList';
 import { UserAvatar } from '@/components/wallet/UserAvatar';
 
@@ -9,10 +10,12 @@ export default function HomePage() {
         <div className="text-center">
           <h1 className="text-xl font-semibold tracking-tight">Home</h1>
           <p className="text-sm text-muted-foreground">
-            Latest payment requests across your XMTP inbox.
+            Latest activity across your XMTP inbox.
           </p>
         </div>
       </div>
+
+      <DebtList limit={5} title="Outstanding debts" showPayAll={false} />
 
       <RequestList
         limit={10}

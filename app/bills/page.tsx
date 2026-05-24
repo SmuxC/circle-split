@@ -1,4 +1,4 @@
-import { BillsDashboard } from '@/components/bills/BillsDashboard';
+import { DebtList } from '@/components/bills/DebtList';
 import { RequestList } from '@/components/requests/RequestList';
 
 export default function BillsPage() {
@@ -7,17 +7,17 @@ export default function BillsPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Bills</h1>
         <p className="text-sm text-muted-foreground">
-          Debts across all your trips. Who owes you, who you owe.
+          Who owes you, who you owe — across all your chats.
         </p>
       </div>
+
+      <DebtList title="Bill splits" showPayAll />
 
       <RequestList
         direction="incoming"
         title="Payment requests"
         emptyLabel="No incoming payment requests."
       />
-
-      <BillsDashboard />
     </div>
   );
 }
