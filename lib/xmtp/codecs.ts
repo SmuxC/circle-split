@@ -3,6 +3,10 @@ import {
   type ContentCodec,
   type EncodedContent,
 } from '@xmtp/content-type-primitives';
+import {
+  AttachmentCodec,
+  RemoteAttachmentCodec,
+} from '@xmtp/content-type-remote-attachment';
 
 // Authority namespaces this app's codecs. Pick something unique to you in
 // production; collisions across apps would let an unrelated XMTP message
@@ -71,6 +75,19 @@ export interface MemberAdded {
   ts: number;
 }
 
+export interface SerialisedRemoteAttachment {
+  url: string;
+  contentDigest: string;
+  // base64-encoded byte fields.
+  salt: string;
+  nonce: string;
+  secret: string;
+  scheme: string;
+  contentLength: number;
+  filename: string;
+  mimeType: string;
+}
+
 export interface PaymentRequest {
   kind: 'payment-request';
   appId: string;
@@ -85,9 +102,14 @@ export interface PaymentRequest {
   symbol: string;
   // Optional free-text note.
   message?: string;
-  // Optional attachment URLs (currently local /gifs/* paths or omitted —
-  // file uploads are out of scope for this codec version).
+  // Public, plaintext attachment URLs (e.g. local /gifs/* picks). Anyone
+  // with the URL can fetch them — only safe for non-sensitive assets.
   attachments?: string[];
+  // E2E-encrypted photo attachments. Each ciphertext is hosted on a
+  // public blob store; only holders of the per-attachment `secret` (which
+  // travels inside this encrypted XMTP payload) can decrypt. Byte fields
+  // are base64 because JSON can't carry raw Uint8Arrays.
+  remoteAttachments?: SerialisedRemoteAttachment[];
   // 'request' or 'split' — for now both encoded the same way.
   mode: 'request' | 'split';
   ts: number;
@@ -147,6 +169,8 @@ export const ALL_CODECS = [
   expenseCodec,
   memberAddedCodec,
   paymentRequestCodec,
+  new AttachmentCodec(),
+  new RemoteAttachmentCodec(),
 ];
 
 /**

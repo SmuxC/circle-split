@@ -27,7 +27,7 @@ import { useXmtp } from '@/components/xmtp/XmtpProvider';
 import { useWallet } from '@/hooks/use-wallet';
 
 type Attachment =
-  | { kind: 'file'; id: string; url: string; name: string }
+  | { kind: 'file'; id: string; url: string; name: string; file: File }
   | { kind: 'gif'; id: string; url: string; name: string };
 
 export default function NewPage() {
@@ -72,6 +72,7 @@ export default function NewPage() {
         id: `${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
         name: file.name,
         url: URL.createObjectURL(file),
+        file,
       });
     }
     if (next.length > 0) setAttachments((prev) => [...prev, ...next]);
@@ -129,12 +130,15 @@ export default function NewPage() {
         return;
       }
 
-      // Only persist gif URLs as attachments — local file blobs aren't
-      // hostable from the recipient's side and would 404. File uploads
-      // require a storage backend we don't have yet.
+      // Gifs travel as plaintext URLs (static public assets). Photos are
+      // E2E-encrypted, uploaded to Vercel Blob, and travel as
+      // RemoteAttachment metadata inside the XMTP payload.
       const gifAttachments = attachments
         .filter((a) => a.kind === 'gif')
         .map((a) => a.url);
+      const files = attachments
+        .filter((a): a is Extract<Attachment, { kind: 'file' }> => a.kind === 'file')
+        .map((a) => a.file);
 
       const { sendPaymentRequest } = await import('@/lib/xmtp/requests');
       await sendPaymentRequest(client, {
@@ -144,6 +148,7 @@ export default function NewPage() {
         symbol: token.symbol,
         message: message.trim() || undefined,
         attachments: gifAttachments,
+        files,
         mode: isSplit ? 'split' : 'request',
       });
 

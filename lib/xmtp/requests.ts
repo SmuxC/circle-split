@@ -1,5 +1,6 @@
 import type { Client, Dm } from '@xmtp/browser-sdk';
 
+import { encryptAndUploadFile } from './attachments';
 import {
   APP_ID,
   ContentTypePaymentRequest,
@@ -7,6 +8,7 @@ import {
   isValidPaymentRequest,
   paymentRequestCodec,
   type PaymentRequest,
+  type SerialisedRemoteAttachment,
 } from './codecs';
 
 export type PaymentRequestRecord = {
@@ -18,6 +20,7 @@ export type PaymentRequestRecord = {
   symbol: string;
   message?: string;
   attachments?: string[];
+  remoteAttachments?: SerialisedRemoteAttachment[];
   mode: 'request' | 'split';
   ts: number; // seconds
   // 'incoming' = someone asked me; 'outgoing' = I asked someone.
@@ -37,6 +40,7 @@ export async function sendPaymentRequest(
     symbol: string;
     message?: string;
     attachments?: string[];
+    files?: File[];
     mode: 'request' | 'split';
   },
 ): Promise<{ conversationId: string; payload: PaymentRequest }> {
@@ -44,6 +48,13 @@ export async function sendPaymentRequest(
     identifier: args.recipient.toLowerCase(),
     identifierKind: 0 as never,
   });
+
+  // Encrypt + upload each file in parallel before composing the payload.
+  // If any upload fails the whole send aborts — partial attachments would
+  // be worse than no send (recipient sees broken thumbnails).
+  const remoteAttachments = args.files?.length
+    ? await Promise.all(args.files.map((f) => encryptAndUploadFile(f)))
+    : undefined;
 
   const payload: PaymentRequest = {
     kind: 'payment-request',
@@ -55,6 +66,7 @@ export async function sendPaymentRequest(
     symbol: args.symbol,
     message: args.message,
     attachments: args.attachments?.length ? args.attachments : undefined,
+    remoteAttachments,
     mode: args.mode,
     ts: Math.floor(Date.now() / 1000),
   };
@@ -117,6 +129,7 @@ export async function listPaymentRequests(
           symbol: payload.symbol,
           message: payload.message,
           attachments: payload.attachments,
+          remoteAttachments: payload.remoteAttachments,
           mode: payload.mode,
           ts: payload.ts,
           direction,

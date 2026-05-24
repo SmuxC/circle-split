@@ -9,7 +9,7 @@ import {
   IconReceiptOff,
 } from '@tabler/icons-react';
 import Image from 'next/image';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -139,6 +139,86 @@ export function RequestList({
   );
 }
 
+type RemoteThumb = { filename: string; url: string | null; error: boolean };
+
+function useDecryptedAttachments(r: PaymentRequestRecord): RemoteThumb[] {
+  const { client } = useXmtp();
+  const metas = r.remoteAttachments ?? [];
+  // Initial placeholder state derived directly from props — no effect
+  // needed for the reset, avoiding the react-hooks/set-state-in-effect rule.
+  const [thumbs, setThumbs] = useState<RemoteThumb[]>(() =>
+    metas.map((m) => ({ filename: m.filename, url: null, error: false })),
+  );
+  // Reset placeholders whenever the request id changes (state-from-prop).
+  const [seenRequestId, setSeenRequestId] = useState(r.requestId);
+  if (seenRequestId !== r.requestId) {
+    setSeenRequestId(r.requestId);
+    setThumbs(metas.map((m) => ({ filename: m.filename, url: null, error: false })));
+  }
+  const createdRef = useRef<string[]>([]);
+
+  useEffect(() => {
+    if (!client || metas.length === 0) return;
+    let cancelled = false;
+
+    (async () => {
+      const { loadRemoteAttachment } = await import('@/lib/xmtp/attachments');
+      // Limit to image MIME types — non-image attachments render as a "!" tile.
+      for (let i = 0; i < metas.length; i++) {
+        const meta = metas[i];
+        if (!meta.mimeType.startsWith('image/')) {
+          if (!cancelled) {
+            setThumbs((prev) => {
+              const next = [...prev];
+              next[i] = { filename: meta.filename, url: null, error: true };
+              return next;
+            });
+          }
+          continue;
+        }
+        try {
+          const decoded = await loadRemoteAttachment(client, meta);
+          if (cancelled) {
+            URL.revokeObjectURL(decoded.url);
+            return;
+          }
+          createdRef.current.push(decoded.url);
+          setThumbs((prev) => {
+            const next = [...prev];
+            next[i] = { filename: meta.filename, url: decoded.url, error: false };
+            return next;
+          });
+        } catch {
+          if (!cancelled) {
+            setThumbs((prev) => {
+              const next = [...prev];
+              next[i] = { filename: meta.filename, url: null, error: true };
+              return next;
+            });
+          }
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // metas is derived from r.remoteAttachments — keying on r.requestId is
+    // sufficient since a request's attachments are immutable post-send.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, r.requestId]);
+
+  // Revoke all object URLs on unmount.
+  useEffect(() => {
+    return () => {
+      createdRef.current.forEach((u) => URL.revokeObjectURL(u));
+      createdRef.current = [];
+    };
+  }, []);
+
+  return thumbs;
+}
+
 function RequestRow({ record: r }: { record: PaymentRequestRecord }) {
   const incoming = r.direction === 'incoming';
   const counterparty = incoming ? r.requester : r.payer;
@@ -148,6 +228,7 @@ function RequestRow({ record: r }: { record: PaymentRequestRecord }) {
     : 'text-emerald-600 dark:text-emerald-400';
   const sign = incoming ? '-' : '+';
   const firstGif = r.attachments?.find((url) => /\.(gif|webp|png|jpe?g)$/i.test(url));
+  const remoteThumbs = useDecryptedAttachments(r);
 
   return (
     <Card className="flex flex-col gap-2 px-3 py-3">
@@ -176,7 +257,7 @@ function RequestRow({ record: r }: { record: PaymentRequestRecord }) {
         </span>
       </div>
 
-      {(r.message || firstGif) && (
+      {(r.message || firstGif || remoteThumbs.length > 0) && (
         <div className="flex items-start gap-3 border-t border-border pt-2">
           {firstGif && (
             <div className="relative size-12 shrink-0 overflow-hidden rounded-md border bg-muted">
@@ -190,6 +271,28 @@ function RequestRow({ record: r }: { record: PaymentRequestRecord }) {
               />
             </div>
           )}
+          {remoteThumbs.map((t) => (
+            <div
+              key={t.filename}
+              className="relative size-12 shrink-0 overflow-hidden rounded-md border bg-muted"
+              title={t.filename}
+            >
+              {t.url ? (
+                <Image
+                  src={t.url}
+                  alt={t.filename}
+                  fill
+                  sizes="48px"
+                  className="object-cover"
+                  unoptimized
+                />
+              ) : (
+                <div className="grid h-full w-full place-items-center text-[10px] text-muted-foreground">
+                  {t.error ? '!' : '…'}
+                </div>
+              )}
+            </div>
+          ))}
           {r.message && (
             <p className="flex-1 text-xs text-muted-foreground">{r.message}</p>
           )}
