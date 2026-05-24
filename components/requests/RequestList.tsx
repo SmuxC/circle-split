@@ -36,7 +36,7 @@ export function RequestList({
   title?: string;
 }) {
   const { isConnected, address } = useWallet();
-  const { client, status, error, tick, connect } = useXmtp();
+  const { client, status, error, storageWarning, tick, connect } = useXmtp();
   const [loading, setLoading] = useState(false);
   const [items, setItems] = useState<PaymentRequestRecord[]>([]);
 
@@ -89,6 +89,9 @@ export function RequestList({
           {status === 'connecting' && <IconLoader2 className="size-4 animate-spin" />}
           {status === 'connecting' ? 'Signing…' : 'Connect XMTP'}
         </Button>
+        {storageWarning && (
+          <p className="text-[10px] text-amber-700">{storageWarning}</p>
+        )}
       </Card>
     );
   }

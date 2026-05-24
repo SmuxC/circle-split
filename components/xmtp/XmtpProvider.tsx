@@ -13,6 +13,7 @@ type XmtpContextValue = {
   client: Client | null;
   status: Status;
   error: string | null;
+  storageWarning: string | null;
   tick: number;
   connect: () => Promise<void>;
   disconnect: () => void;
@@ -22,6 +23,7 @@ const XmtpContext = createContext<XmtpContextValue>({
   client: null,
   status: 'idle',
   error: null,
+  storageWarning: null,
   tick: 0,
   connect: async () => {},
   disconnect: () => {},
@@ -33,6 +35,7 @@ export function XmtpProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<Status>('idle');
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  const [storageWarning, setStorageWarning] = useState<string | null>(null);
   const ownedBy = useRef<string | null>(null);
 
   const { addConversations, addConversation, addMessage, reset } = useInboxStore();
@@ -41,6 +44,7 @@ export function XmtpProvider({ children }: { children: React.ReactNode }) {
     setClient(null);
     setStatus('idle');
     setError(null);
+    setStorageWarning(null);
     ownedBy.current = null;
     reset();
   }, [reset]);
@@ -53,17 +57,31 @@ export function XmtpProvider({ children }: { children: React.ReactNode }) {
     setStatus('connecting');
     setError(null);
     try {
-      // Storage Access API: iOS Safari partitions iframe storage by default.
-      try {
-        if (
-          typeof document !== 'undefined' &&
-          'requestStorageAccess' in document &&
-          window.top !== window.self
-        ) {
-          await (document as Document & { requestStorageAccess: () => Promise<void> })
-            .requestStorageAccess();
+      // Storage Access API: iOS Safari partitions OPFS in cross-origin iframes.
+      // Check whether access is already granted; if not, request it via the
+      // user gesture that triggered connect(). Surface a warning if denied so
+      // the user knows message history may not persist across reloads.
+      if (
+        typeof document !== 'undefined' &&
+        'hasStorageAccess' in document &&
+        window.top !== window.self
+      ) {
+        const doc = document as Document & {
+          hasStorageAccess: () => Promise<boolean>;
+          requestStorageAccess: () => Promise<void>;
+        };
+        try {
+          const hasAccess = await doc.hasStorageAccess();
+          if (!hasAccess) {
+            await doc.requestStorageAccess();
+          }
+          setStorageWarning(null);
+        } catch {
+          setStorageWarning(
+            'iOS Safari blocked persistent storage access. Message history may be lost on page refresh.',
+          );
         }
-      } catch {}
+      }
 
       const { Client, LogLevel } = await import('@xmtp/browser-sdk');
       const { buildXmtpSigner } = await import('@/lib/xmtp/signer');
@@ -176,7 +194,7 @@ export function XmtpProvider({ children }: { children: React.ReactNode }) {
   }, [client, addConversations, addConversation, addMessage]);
 
   return (
-    <XmtpContext.Provider value={{ client, status, error, tick, connect, disconnect }}>
+    <XmtpContext.Provider value={{ client, status, error, storageWarning, tick, connect, disconnect }}>
       {children}
     </XmtpContext.Provider>
   );

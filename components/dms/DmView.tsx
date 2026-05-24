@@ -34,7 +34,7 @@ import {
 import { sendPaymentConfirmation } from '@/lib/xmtp/requests';
 
 export function DmView({ conversationId }: { conversationId: string }) {
-  const { client, status, tick } = useXmtp();
+  const { client, status, tick, storageWarning } = useXmtp();
   const { address } = useWallet();
   const [dm, setDm] = useState<Dm | null>(null);
   const [peer, setPeer] = useState<string>('');
@@ -185,6 +185,12 @@ export function DmView({ conversationId }: { conversationId: string }) {
           </span>
         </div>
       </Card>
+
+      {storageWarning && (
+        <p className="rounded-md bg-amber-500/10 px-3 py-2 text-center text-xs text-amber-700">
+          {storageWarning}
+        </p>
+      )}
 
       <div
         ref={scrollRef}
