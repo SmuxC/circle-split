@@ -10,7 +10,7 @@ import {
 } from '@tabler/icons-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -192,12 +192,10 @@ export default function GroupsPage() {
         <Card className="flex flex-col gap-2 px-4 py-4">
           <p className="text-sm font-medium">Start a new DM</p>
           <div className="flex gap-2">
-            <Input
-              placeholder="0x… Ethereum address"
+            <ProfileSearchInput
               value={newDmAddr}
-              onChange={(e) => setNewDmAddr(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleNewDm()}
-              className="h-9 flex-1"
+              onChange={setNewDmAddr}
+              onEnter={handleNewDm}
             />
             <Button size="sm" onClick={handleNewDm} disabled={creating || !newDmAddr.trim()}>
               {creating ? <IconLoader2 className="size-4 animate-spin" /> : 'Open'}
@@ -226,15 +224,13 @@ export default function GroupsPage() {
           <div className="flex flex-col gap-2">
             {groupAddrs.map((addr, i) => (
               <div key={i} className="flex gap-2">
-                <Input
-                  placeholder="0x… Ethereum address"
+                <ProfileSearchInput
                   value={addr}
-                  onChange={(e) => {
+                  onChange={(val) => {
                     const next = [...groupAddrs];
-                    next[i] = e.target.value;
+                    next[i] = val;
                     setGroupAddrs(next);
                   }}
-                  className="h-9 flex-1"
                 />
                 {groupAddrs.length > 1 && (
                   <Button
@@ -379,6 +375,112 @@ function PageHeader() {
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Messages</h1>
       <p className="text-sm text-muted-foreground">DMs and group chats over XMTP.</p>
+    </div>
+  );
+}
+
+// ── Profile search input ──────────────────────────────────────────────────────
+
+type ProfileResult = {
+  address: string;
+  name: string;
+  previewImageUrl?: string;
+  imageUrl?: string;
+};
+
+function ProfileSearchInput({
+  value,
+  onChange,
+  onEnter,
+}: {
+  value: string;
+  onChange: (val: string) => void;
+  onEnter?: () => void;
+}) {
+  const [results, setResults] = useState<ProfileResult[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [open, setOpen] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const search = useCallback(async (query: string) => {
+    const q = query.trim();
+    if (q.length < 2) { setResults([]); setOpen(false); return; }
+    setSearching(true);
+    try {
+      const { Sdk } = await import('@aboutcircles/sdk');
+      const sdk = new Sdk();
+      const res = await (sdk.rpc as unknown as {
+        sdk: { searchProfileByAddressOrName: (q: string, limit: number) => Promise<{ results: ProfileResult[] }> };
+      }).sdk.searchProfileByAddressOrName(q, 8);
+      setResults(res.results ?? []);
+      setOpen((res.results ?? []).length > 0);
+    } catch {
+      setResults([]); setOpen(false);
+    } finally {
+      setSearching(false);
+    }
+  }, []);
+
+  const handleChange = (val: string) => {
+    onChange(val);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => search(val), 300);
+  };
+
+  const handleSelect = (r: ProfileResult) => {
+    onChange(r.address);
+    setOpen(false);
+    setResults([]);
+  };
+
+  return (
+    <div className="relative flex-1">
+      <div className="relative">
+        <Input
+          value={value}
+          onChange={(e) => handleChange(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') onEnter?.(); }}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          onFocus={() => results.length > 0 && setOpen(true)}
+          placeholder="Name or 0x address"
+          className="h-9"
+        />
+        {searching && (
+          <IconLoader2 className="absolute right-2 top-2.5 size-4 animate-spin text-muted-foreground" />
+        )}
+      </div>
+      {open && results.length > 0 && (
+        <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border bg-background shadow-lg">
+          {results.map((r) => (
+            <button
+              key={r.address}
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => handleSelect(r)}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-accent"
+            >
+              {r.previewImageUrl || r.imageUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={r.previewImageUrl ?? r.imageUrl}
+                  alt={r.name}
+                  className="size-7 shrink-0 rounded-full object-cover"
+                />
+              ) : (
+                <div className="grid size-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">
+                  {r.name?.[0]?.toUpperCase() ?? '?'}
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">{r.name}</div>
+                <div className="font-mono text-[10px] text-muted-foreground">
+                  {shortenAddress(r.address)}
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
